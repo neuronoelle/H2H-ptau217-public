@@ -1,0 +1,104 @@
+---
+title: "ptau217_data_mod"
+author: "Noelle"
+date: "2024-02-22"
+output: html_document
+---
+
+```{r load data, echo=TRUE, message=FALSE}
+
+library(rmarkdown)
+library(knitr)
+library(readxl)
+library(boot)
+library(tidyverse)
+
+#Data has already been filtered for visit == 0 and to only include participants that have all biomarkers available
+suppressWarnings ({
+data <- read_xlsx("~/Documents/Data/dataset_H2H_start.xlsx") #read your data
+datafr <- as.data.frame(data)
+})
+
+```
+
+```{r log transformations of variables, echo=TRUE, message=FALSE}
+
+#examine histograms, change for inspection variable 
+hist(datafr$Plasma_ptau217_pgml_AlzPath_v2_Simoa_2024)
+
+p217t217W_log <- log10(datafr$PL_pT217T217percentmean_WashU_2023)
+datafr["p217t217W_log"] <- p217t217W_log
+
+p217Lilly_log <- log10(datafr$PL_ptau217_pgml_Lilly_2022)
+datafr["p217Lilly_log"] <- p217Lilly_log
+
+p217WashU_log <- log10(datafr$PL_pT217levelmean_WashU_2023)
+datafr["p217WashU_log"] <- p217WashU_log
+
+p217janssenlog <- log10(datafr$PL_ptau217_pgml_Janssen_2023)
+datafr["p217janssenlog"] <- p217janssenlog
+
+CSFp217log <- log10(datafr$CSF_ptau217_pgml_Lilly_2019_2024)
+datafr["CSFp217log"] <- CSFp217log
+
+ALZp217log <- log10(datafr$Plasma_ptau217_pgml_AlzPath_v2_Simoa_2024)
+datafr["ALZp217log"] <- ALZp217log
+
+ptau181_ab42_log <- log10(datafr$ptau181_ab42)
+datafr["ptau181_ab42_log"] <- ptau181_ab42_log
+
+ptau181_csf_log <- log10(datafr$CSF_Ptau_pgml_imputed_Elecsys_2020_2022)
+datafr["ptau181_csf_log"] <- ptau181_csf_log
+```
+
+```{r z scores all, echo=TRUE, message=FALSE}
+datafr <- datafr %>% subset(!is.na(PL_ptau217_pgml_Lilly_2022)&(!is.na(PL_pT217levelmean_WashU_2023))&(!is.na(PL_ptau217_pgml_Janssen_2023))&(!is.na(CSFp217log))&(!is.na(ALZp217log))) #998
+
+cu <- datafr %>% subset(Abnormal_CSF_Ab42_Ab40_Ratio %in% c("0"))
+cu <- cu %>% subset(diagnosis_baseline_variable %in% c("Normal", "SCD")) 
+
+
+#z scores for these individuals with log transformed variables
+datafr$zscoreswashurref <- (datafr$p217t217W_log - mean(cu$p217t217W_log))/sd(cu$p217t217W_log)
+
+datafr$zscoreswashuref <- (datafr$p217WashU_log - mean(cu$p217WashU_log))/ sd(cu$p217WashU_log)
+
+datafr$zscoreslilref <- (datafr$p217Lilly_log - mean(cu$p217Lilly_log))/sd(cu$p217Lilly_log)
+
+datafr$zscoresjansref <- (datafr$p217janssenlog - mean(cu$p217janssenlog))/sd(cu$p217janssenlog)
+
+datafr$zscoresalz <- (datafr$ALZp217log - mean(cu$ALZp217log))/sd(cu$ALZp217log)
+
+
+#CSF
+
+datafr$zscoresptau181_ab42_log <- (datafr$ptau181_ab42_log - mean(cu$ptau181_ab42_log)) / sd(cu$ptau181_ab42_log)
+
+datafr$zscoresptau181 <- (datafr$ptau181_csf_log - mean(cu$ptau181_csf_log)) / sd(cu$ptau181_csf_log)
+
+datafr$zscorescsf217 <- (datafr$CSFp217log - mean(cu$CSFp217log)) / sd(cu$CSFp217log)
+
+```
+
+```{r add or change variables etc., echo=F}
+#rename variable
+colnames(datafr)[colnames(datafr) == "gender_baseline_variable"] <- "gender"
+
+#create APOE binary variable
+datafr$apoebin <- ifelse(grepl("4", datafr$apoe_genotype_baseline_variable), 1, 0)
+
+#create cu vs. ci variable 
+datafr$cog_stat <- ifelse(datafr$cognitive_status_baseline_variable %in% c("Normal", "SCD"), 0, 1)
+datafr$cog_stat <- as.factor(as.numeric(datafr$cog_stat))
+
+#exclude cases
+datafr$cognitive_status_baseline_variable[datafr$sid == "BF3248"] <- "Dementia"
+datafr$cognitive_status_baseline_variable[datafr$cognitive_status_baseline_variable == "TBD"] <- "MCI"
+```
+
+```{r export data, echo=F}
+##export file
+#install.packages("writexl")
+library(writexl)
+write_xlsx(datafr, "~/Documents/Data/dataset_H2H_analyses.xlsx")
+```

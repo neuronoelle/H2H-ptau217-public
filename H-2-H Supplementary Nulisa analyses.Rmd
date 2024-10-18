@@ -1,0 +1,2847 @@
+---
+title: "Nulisa"
+author: "Noelle"
+date: "2024-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(tidyverse)
+datafr <-  read_xlsx("~/Documents/Data/dataset_H2HPtau217_NULISA_inclmultiplex.xlsx")
+#names(datafr)[names(datafr) == "zscoresnulisa_single"] <- "zscoresnulisa"
+names(datafr)[names(datafr) == "zscoresnulisa_multi"] <- "zscoresnulisa"
+```
+
+#Sup. Fig 18 code
+##Plots
+
+```{r cor plots, echo=F}
+#Correlations among plasma biomarkers
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa_multi")
+xlabs <- c("%p-tau217 WashU (z-scored)", "p-tau217 WashU (z-scored)", "p-tau217 Lilly (z-scored)", "p-tau217 NULISA (z-scored)")
+ylabs <- c("%p-tau216 WashU (z-scored)", "p-tau217 WashU (z-scored)", "p-tau217 Lilly (z-scored)", "p-tau217 NULISA (z-scored)")
+
+combinations <- data.frame(t(combn(biomarkers, 2)))
+combinations$x_label <- NA
+combinations$y_label <- NA
+for (i in 1:length(biomarkers)) {
+  idx_x1 <- which(combinations$X1 == biomarkers[i])
+  idx_x2 <- which(combinations$X2 == biomarkers[i])
+  combinations$x_label[idx_x1] <- xlabs[i]
+  combinations$y_label[idx_x2] <- ylabs[i]
+}
+
+datafr$Abnormal_CSF_Ab42_Ab40_Ratio <- as.factor(as.numeric(datafr$Abnormal_CSF_Ab42_Ab40_Ratio))
+
+create_plot <- function(var1, var2, x_label, y_label) {
+  formula1 <- as.formula(paste("scale(",var1, ")~scale(", var2, ")"))
+  model1 <- lm(formula1, data = datafr)
+  rsqr1 <- summary(model1)$adj.r.squared
+  beta1 <- summary(model1)$coefficient[2]
+  formula2 <- as.formula(paste("scale(",var1, ") ~ scale(", var2, ")"))
+  model2 <- lm(formula2, data = datafr, subset = (Abnormal_CSF_Ab42_Ab40_Ratio == 1))
+  rsqr2 <- summary(model2)$adj.r.squared
+  beta2 <- summary(model2)$coefficient[2]
+  
+  print(paste("Creating plot for", var1, "and", var2))
+  ggplot(datafr, aes_string(x = var1, y = var2, color = "Abnormal_CSF_Ab42_Ab40_Ratio")) +
+    geom_point(size = 1, shape = 21, alpha = 0.3, fill="grey40") +
+    geom_smooth(method = lm, color = "black") +
+    geom_abline(color = "black", linetype = "dotted") +
+    #scale_y_continuous(breaks = round(seq(-4, 10, by = 2.0), 2), limits = c(-4, 10), name = y_label) +
+    #scale_x_continuous(breaks = round(seq(-4, 10, by = 2.0), 2), limits = c(-4, 10), name = x_label) +
+    scale_color_manual(values = c("grey20", "#93003a"), guide = "none") +
+    theme_classic() +
+    annotate("text", x = 4, y = -4, label = paste("B:", format(round(beta1, 2), nsmall = 2), ", R2:", format(round(rsqr1, 2),  nsmall = 2)),  size = 3, color = "black") +
+    theme(
+      axis.text.x = element_text(size = 6),
+      axis.text.y = element_text(size = 6),
+      axis.title.x = element_text(size =8),
+      axis.title.y = element_text(size = 8),
+      panel.border = element_rect(linewidth = 0.5, fill = NA)
+    )
+}
+
+plots_list <- lapply(seq_len(nrow(combinations)), function(i) {
+  create_plot(
+    combinations$X1[i],
+    combinations$X2[i],
+    combinations$x_label[i],
+    combinations$y_label[i]
+  )
+})
+
+for (i in seq_along(plots_list)) {
+  print(plots_list[[i]])
+}
+
+library(gridExtra)
+combined_plot <- grid.arrange(grobs=plots_list, ncol = 3) #3
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/ptau217assays_correlations_NULISA_multi.pdf",device = "pdf",width = 200, dpi=500, height = 150, units = "mm", combined_plot)
+```
+
+##Table
+```{r table, echo=F}
+datafr$apoebin <- ifelse(grepl("4", datafr$apoe_genotype_baseline_variable), 1, 0)
+datafr$cog_stat <- ifelse(datafr$cognitive_status_baseline_variable %in% c("Normal", "SCD"), 0, 1)
+datafr$cog_stat <- as.factor(as.numeric(datafr$cog_stat))
+datafr$cognitive_status_baseline_variable[datafr$sid == "BF3248"] <- "Dementia"
+
+tabs <- datafr %>% select(gender, education_level_years_baseline_variable,cognitive_status_baseline_variable,
+                          age, tnic_cho_com_I_IV, fnc_ber_com_composite,
+                          Abnormal_CSF_Ab42_Ab40_Ratio,mmse_score, mPACC_v1,
+                          apoebin,
+                          PL_ptau217_pgml_Lilly_2022,
+                          PL_pT217levelmean_WashU_2023,
+                          PL_pT217T217percentmean_WashU_2023, NPQ, ptau181_ab42, CSF_Ptau_pgml_imputed_Elecsys_2020_2022)
+
+tabs$mmse_score <- as.numeric(tabs$mmse_score)
+tabs$apoebin <- as.factor(tabs$apoebin)
+
+library(gtsummary)
+table <- tabs %>% tbl_summary(type = all_continuous() ~ "continuous2",
+                      statistic = list(
+                        all_continuous()~ c("{mean} ({sd})",
+                                            "{min}, {max}"),
+                        all_categorical() ~ "{n} / {N} ({p}%)"
+                      ),
+                      digits = all_continuous()~2)
+table
+```
+
+
+
+##AB-PET ROC
+
+```{r ABPET ROC, echo=F}
+###AB pet ROC
+library(pROC)
+cutoffAB <- 1.033
+datafr$abpetbin <- ifelse(datafr$fnc_ber_com_composite >= cutoffAB, 1, 0)
+dfab <- datafr %>% drop_na(abpetbin)
+actual_labels <- dfab$abpetbin
+
+model1ab <- glm(abpetbin ~ zscoreslilref + scale(age) + gender, data = dfab, family = binomial)
+model2ab <- glm(abpetbin ~ zscoreswashuref + scale(age) + gender, data = dfab, family = binomial)
+model3ab <- glm(abpetbin ~ zscoreswashurref + scale(age) + gender, data = dfab, family = binomial)
+model4ab <- glm(abpetbin ~ zscoresjansref + scale(age) + gender, data = dfab, family = binomial)
+model5ab <- glm(abpetbin ~ zscoresalz + scale(age) + gender, data = dfab, family = binomial)
+model6ab <- glm(abpetbin ~ zscoresnulisa + scale(age) + gender, data = dfab, family = binomial)
+model7ab <- glm(abpetbin ~ zscorescsf217 + scale(age) + gender, data = dfab, family = binomial)
+model8ab <- glm(abpetbin ~ zscoresptau181_ab42_log + scale(age) + gender, data = dfab, family = binomial)
+model9ab <- glm(abpetbin ~ zscoresptau181 + scale(age) + gender, data = dfab, family = binomial)
+
+predicted_probabilities1ab <- predict(model1ab, newdata=dfab, type = "response")
+predicted_probabilities2ab <- predict(model2ab, newdata=dfab, type = "response")
+predicted_probabilities3ab <- predict(model3ab, newdata=dfab, type = "response")
+predicted_probabilities4ab <- predict(model4ab, newdata=dfab, type = "response")
+predicted_probabilities5ab <- predict(model5ab, newdata=dfab, type = "response")
+predicted_probabilities6ab <- predict(model6ab, newdata=dfab, type = "response")
+predicted_probabilities7ab <- predict(model7ab, newdata=dfab, type = "response")
+predicted_probabilities8ab <- predict(model8ab, newdata=dfab, type = "response")
+predicted_probabilities9ab <- predict(model9ab, newdata=dfab, type = "response")
+
+
+roc_lilly = pROC::roc(actual_labels, predicted_probabilities1ab, quiet=T)     
+roc_washu = pROC::roc(actual_labels, predicted_probabilities2ab, quiet=T)
+roc_washur = pROC::roc(actual_labels, predicted_probabilities3ab, quiet=T)
+roc_janssen = pROC::roc(actual_labels, predicted_probabilities4ab, quiet=T)
+roc_alz = pROC::roc(actual_labels, predicted_probabilities5ab, quiet=T)
+roc_nulisa = pROC::roc(actual_labels, predicted_probabilities6ab, quiet=T)
+roc_ptau181 = pROC::roc(actual_labels, predicted_probabilities9ab, quiet=T)
+roc_ptau181ab42 = pROC::roc(actual_labels, predicted_probabilities8ab, quiet=T)
+roc_csf217 = pROC::roc(actual_labels, predicted_probabilities7ab, quiet=T)
+
+roc_list <- list(roc_washur, roc_washu, roc_lilly, roc_janssen, roc_alz, roc_nulisa, roc_csf217, roc_ptau181ab42, roc_ptau181)
+combinations <- combn(roc_list, 2, simplify = F)
+delongres <- list()
+
+library(pROC)
+for (i in seq_along(combinations)) {
+  model1 <- combinations[[i]][[1]]
+  model2 <- combinations[[i]][[2]]
+  
+  res <- roc.test(model1, model2, method = "delong")
+  long <- data.frame(
+    zstat = round(res$statistic,3), 
+    pval = round(res$p.value,3),
+    auc1 = res$estimate[1], 
+    auc2 = res$estimate[2])
+  
+  delongres[[length(delongres) + 1]] <- long
+}
+
+delongres <- do.call(rbind.data.frame, delongres)
+delongres$padj <- round(p.adjust(delongres$pval, method = "fdr"),3)
+openxlsx::write.xlsx(delongres,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_delongresults_NULISA_single.xlsx")
+
+results_roc <- list()
+results_auc <- list()
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresjansref", "zscoresalz", "zscoresnulisa", "zscorescsf217",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+
+for (i in 1:length(biomarkers)){
+  predictors_i <- c(biomarkers[i])
+  
+  model <- glm(dfab$abpetbin ~ . + scale(dfab$age) + dfab$gender,
+               data = na.omit(dfab[predictors_i]),
+               family = binomial)
+  
+  predicted_probabilities <- predict(model, newdata=dfab[predictors_i], type = "response")
+  
+  roc = pROC::roc(dfab$abpetbin, predicted_probabilities, quiet=T)   
+  
+  coord <- coords(roc, "best", best.method="youden", ret=c("threshold",
+                                                           "specificity", "sensitivity", "accuracy", "npv","ppv", "tn", "tp", "fn", "fp"))
+  coord90 <- coords(roc, x = 0.9, input = "specificity", ret = c("threshold", "specificity", "sensitivity", "accuracy", "npv", "ppv", "tn", "tp", "fn", "fp"))
+  
+  results_roc[[i]] <- data.frame(
+    fpr = roc$specificities,
+    tpr = roc$sensitivities,
+    variable = predictors_i[[1]]
+  )
+  
+  auc_model1 <- ci.auc(roc)
+  auc_model <- auc_model1[2]
+  ci_lower_m1 <- auc_model1[1]
+  ci_upper_m1 <- auc_model1[3]
+  total_instances <- coord$tp + coord$tn + coord$fp + coord$fn
+  accuracy <- (coord$tp + coord$tn) / total_instances
+  
+  
+  results_auc[[i]] <- data.frame(
+    variable = predictors_i[[1]],
+    ci_lower = ci_lower_m1,
+    ci_upper = ci_upper_m1,
+    auc = round(auc_model,3),
+    Sensitivity = round((coord$sensitivity),3),
+    Specificity = round((coord$specificity),3),
+    NPV = round((coord$npv),3),
+    PPV = round((coord$ppv),3),
+    Accuracy = round(accuracy, 3),
+    #NPV90 = round((coord90$npv),3),
+    #PPV90 = round((coord90$ppv),3),
+    stringsAsFactors = FALSE
+  )
+}
+results_roc <- do.call(rbind, results_roc)
+results_auc <- do.call(rbind, results_auc)
+openxlsx::write.xlsx(results_auc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/roc_ABPET_NULISA.xlsx")
+```
+
+```{r ABPET AUC comparisons, echo=F}
+###AB AUC comparisons----
+library(boot)
+bsab <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  actual_labels <- d$abpetbin
+  fml1_string <- paste("abpetbin ~ gender + scale(age) +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  roc_curve1 <- pROC::roc(actual_labels, pred_prob1, quiet=T)
+  auc_model1 <- ci.auc(roc_curve1)[2]
+  fml2_string <- paste("abpetbin ~ gender + scale(age) +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve2 <- pROC::roc(actual_labels, pred_prob2, quiet=T)
+  auc_model2 <- ci.auc(roc_curve2)[2]
+  difference_auc <- roc_curve1$auc - roc_curve2$auc
+  return(c(difference_auc, auc_model1, auc_model2))
+}
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+results_auc_ab <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dfab, 
+                         statistic = bsab, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    boot_aucdiff <- boot_results$t0[1]
+    results_underH0_aucdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue_aucdiff <- mean(abs(results_underH0_aucdiff) >= abs(boot_aucdiff))
+    ci1_auc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_auc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_aucdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_ab[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      AUC1 = round((boot_results$t0[2]),7),
+      aucci1_lower = round(ci1_auc[1],7),
+      aucci1_upper = round(ci1_auc[2],7),
+      AUC2 = round((boot_results$t0[3]),7),
+      aucci2_lower = round(ci2_auc[1],7),
+      aucci2_upper = round(ci2_auc[2],7), 
+      pvalue_auc = boot_pvalue_aucdiff,
+      aucdiff = round((boot_results$t0[1]),7),
+      cilow_aucdiff = round(cidiff_aucdiff[1],7),
+      cihigh_aucdiff=round(cidiff_aucdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_auc_ab <- do.call(rbind.data.frame, results_auc_ab)
+final_auc_ab$padj_auc <- round(p.adjust(final_auc_ab$pvalue_auc, method = "fdr"),3)
+openxlsx::write.xlsx(final_auc_ab,file="~/Documents/Projects/H-2-H plasma ptau217 assays/bootstrapsAUC_ABPET_Nulisa.xlsx")
+
+#plot
+test <- head(final_auc_ab, 1)
+test <- test %>% select(variable1,AUC1, aucci1_lower, aucci1_upper)
+colnames(test)[colnames(test) == "variable1"] <- "variable2"
+colnames(test)[colnames(test) == "AUC1"] <- "AUC2"
+colnames(test)[colnames(test) == "aucci1_lower"] <- "aucci2_lower"
+colnames(test)[colnames(test) == "aucci1_upper"] <- "aucci2_upper"
+
+xx <- final_auc_ab %>%
+  select(-variable1,-AUC1, -aucci1_lower, -aucci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+plot_data$Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181"))
+colnames(plot_data)[colnames(plot_data) == "AUC2"] <- "AUC"
+colnames(plot_data)[colnames(plot_data) == "aucci2_lower"] <- "AUC_CIlow"
+colnames(plot_data)[colnames(plot_data) == "aucci2_upper"] <- "AUC_CIhigh"
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$AUC, plot_data$AUC_CIlow, plot_data$AUC_CIhigh)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/AB_AUC_table_Nulisa.xlsx")
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+AUC <- ggplot(data = plot_data, aes(x = factor(Assay,levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")), y = AUC,color = color_plot, shape=shape_plot)) +
+  geom_hline(yintercept = plot_data$AUC[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = AUC_CIlow, ymax = AUC_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", AUC)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits=c(0.7,1),breaks = seq(0.7, 1, by=0.05), expand = c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(title = "AUC Aβ-PET",x = element_blank(),y = "just for plotting") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=10, face="bold"))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_ROC_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+##AB-PET Accuracy
+```{r Accuracy ABPET bootstrapping + plots, echo=F}
+bsab <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  fml1_string <- paste("abpetbin ~ gender + scale(age)  +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  fml2_string <- paste("abpetbin ~ gender + scale(age)  +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve1 <- roc(d$abpetbin, pred_prob1, quiet=T)
+  coordm1 <- coords(roc_curve1, "best", best.method = "youden")
+  threshold1 <- coordm1$threshold
+  pred_bin1 <- ifelse(pred_prob1 > threshold1, 1, 0)
+  roc_curve2 <- roc(d$abpetbin, pred_prob2, quiet=T)
+  coordm2 <- coords(roc_curve2, "best", best.method = "youden")
+  threshold2 <- coordm2$threshold
+  pred_bin2 <- ifelse(pred_prob2 > threshold2, 1, 0)
+  cm1 <- table(d$abpetbin, pred_bin1)
+  cm2 <- table(d$abpetbin, pred_bin2)
+  accuracy_m1 <- sum(diag(cm1)) / sum(cm1)
+  accuracy_m2 <- sum(diag(cm2)) / sum(cm2)
+  difference_acc <- accuracy_m1 - accuracy_m2
+  return(c(difference_acc, accuracy_m1, accuracy_m2))
+}
+
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+
+results_acc_ab_acc <- list()
+library(pROC)
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dfab, 
+                         statistic = bsab, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    
+    boot_accdiff <- boot_results$t0[1]
+    results_underH0_accdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[1])
+    boot_pvalue_accdiff <- mean(abs(results_underH0_accdiff) >= abs(boot_accdiff))
+    ci1_acc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_acc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_accdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_acc_ab_acc[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      Accuracy1 = round((boot_results$t0[2]),7),
+      accci1_lower = round(ci1_acc[1],7),
+      accci1_upper = round(ci1_acc[2],7),
+      Accuracy2 = round((boot_results$t0[3]),7),
+      accci2_lower = round(ci2_acc[1],7),
+      accci2_upper = round(ci2_acc[2],7),
+      pvalue_accuracy = boot_pvalue_accdiff,
+      accdiff = round((boot_results$t0[1]),7),
+      cilow_accdiff = round(cidiff_accdiff[1],7),
+      cihigh_accdiff=round(cidiff_accdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_acc_ab <- do.call(rbind.data.frame, results_acc_ab_acc)
+final_acc_ab$padj_acc <- round(p.adjust(final_acc_ab$pvalue_acc, method = "fdr"),3)
+openxlsx::write.xlsx(final_acc_ab,file="~/Documents/Projects/H-2-H plasma ptau217 assays/bootstraps_Accuracy_ABPET_Nulisa_single.xlsx")
+
+#final_acc_ab <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/bootstraps_Accuracy_ABPET_Nulisa.xlsx")
+
+
+test <- head(final_acc_ab, 1)
+test <- test %>% select(variable1,Accuracy1, accci1_lower, accci1_upper)
+colnames(test)[colnames(test) == "variable1"] <- "variable2"
+colnames(test)[colnames(test) == "Accuracy1"] <- "Accuracy2"
+colnames(test)[colnames(test) == "accci1_lower"] <- "accci2_lower"
+colnames(test)[colnames(test) == "accci1_upper"] <- "accci2_upper"
+
+xx <- final_acc_ab %>%
+  select(-variable1,-Accuracy1, -accci1_lower, -accci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+plot_data$Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly","p-tau217 NULISA", "p-tau181/AB42", "p-tau181"))
+colnames(plot_data)[colnames(plot_data) == "Accuracy2"] <- "ACC"
+colnames(plot_data)[colnames(plot_data) == "accci2_lower"] <- "ACC_CIlow"
+colnames(plot_data)[colnames(plot_data) == "accci2_upper"] <- "ACC_CIhigh"
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$ACC, plot_data$ACC_CIlow, plot_data$ACC_CIhigh)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/AB_Accuracy_table_NULISA.xlsx")
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+ACC <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y = ACC,color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$ACC[6], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = ACC_CIlow, ymax = ACC_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", ACC)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits=c(0.7,1),breaks = seq(0.7, 1, by=0.05), expand = c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(y = "scaling",
+       x = element_blank(),
+       title = "Accuracy Aβ-PET") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA), 
+        plot.title = element_text(hjust=0.5, size=10, face="bold"))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_Accurac_NULISA.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+
+##Tau-PET ROC
+```{r tauPET ROC, echo=F}
+cutofftau <- 1.362
+datafr$taupetbin <- ifelse(datafr$Exclude_tauPET %in% c(0,2,3),ifelse(datafr$tnic_cho_com_I_IV >= cutofftau, 1, 0), NA)
+dftau <- datafr %>% drop_na(taupetbin) #447
+actual_labels <- dftau$taupetbin
+actual_labels <- as.integer(actual_labels) 
+
+model1tau <- glm(taupetbin ~ zscoreslilref + scale(age) + gender, data = dftau, family = binomial)
+model2tau <- glm(taupetbin ~ zscoreswashuref + scale(age) + gender, data = dftau, family = binomial)
+model3tau <- glm(taupetbin ~ zscoreswashurref + scale(age) + gender, data = dftau, family = binomial)
+model4tau <- glm(taupetbin ~ zscoresjansref + scale(age) + gender, data = dftau, family = binomial)
+model5tau <- glm(taupetbin ~ zscoresalz + scale(age) + gender, data = dftau, family = binomial)
+model6tau <- glm(taupetbin ~ zscoresnulisa + scale(age) + gender, data = dftau, family = binomial)
+model7tau <- glm(taupetbin ~ zscorescsf217 + scale(age) + gender, data = dftau, family = binomial)
+model8tau <- glm(taupetbin ~ zscoresptau181_ab42_log + scale(age) + gender, data = dftau, family = binomial)
+model9tau <- glm(taupetbin ~ zscoresptau181 + scale(age) + gender, data = dftau, family = binomial)
+
+predicted_probabilities1tau <- predict(model1tau, newdata=dftau, type = "response")
+predicted_probabilities2tau <- predict(model2tau, newdata=dftau, type = "response")
+predicted_probabilities3tau <- predict(model3tau, newdata=dftau, type = "response")
+predicted_probabilities4tau <- predict(model4tau, newdata=dftau, type = "response")
+predicted_probabilities5tau <- predict(model5tau, newdata=dftau, type = "response")
+predicted_probabilities6tau <- predict(model6tau, newdata=dftau, type = "response")
+predicted_probabilities7tau <- predict(model7tau, newdata=dftau, type = "response")
+predicted_probabilities8tau <- predict(model8tau, newdata=dftau, type = "response")
+predicted_probabilities9tau <- predict(model9tau, newdata=dftau, type = "response")
+
+roc_lilly = pROC::roc(actual_labels, predicted_probabilities1tau)      
+roc_washu = pROC::roc(actual_labels, predicted_probabilities2tau)
+roc_washur = pROC::roc(actual_labels, predicted_probabilities3tau)
+roc_janssen = pROC::roc(actual_labels, predicted_probabilities4tau)
+roc_alz = pROC::roc(actual_labels, predicted_probabilities5tau)
+roc_nulisa = pROC::roc(actual_labels, predicted_probabilities5tau)
+
+roc_csf217 = pROC::roc(actual_labels, predicted_probabilities6tau)
+roc_ptau181ab42 = pROC::roc(actual_labels, predicted_probabilities7tau)
+roc_ptau181 = pROC::roc(actual_labels, predicted_probabilities8tau)
+
+roc_list <- list(roc_washur, roc_washu, roc_lilly, roc_janssen, roc_alz, roc_nulisa, roc_csf217, roc_ptau181ab42, roc_ptau181)
+combinations <- combn(roc_list, 2, simplify = F)
+delongres <- list()
+
+library(pROC)
+for (i in seq_along(combinations)) {
+  model1 <- combinations[[i]][[1]]
+  model2 <- combinations[[i]][[2]]
+  
+  res <- roc.test(model1, model2, method = "delong")
+  long <- data.frame(
+    zstat = round(res$statistic,3), 
+    pval = round(res$p.value,3),
+    auc1 = res$estimate[1], 
+    auc2 = res$estimate[2])
+  
+  delongres[[length(delongres) + 1]] <- long
+}
+
+delongres <- do.call(rbind.data.frame, delongres)
+delongres$padj <- round(p.adjust(delongres$pval, method = "fdr"),3)
+openxlsx::write.xlsx(delongres,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_delongresults_Nulisa.xlsx")
+
+results_roc <- list()
+results_auc <- list()
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresjansref", "zscoresalz", "zscoresnulisa", "zscorescsf217",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+
+for (i in 1:length(biomarkers)){
+  predictors_i <- c(biomarkers[i])  
+  model <- glm(dftau$taupetbin ~ . + scale(dftau$age) + dftau$gender,
+               data = na.omit(dftau[predictors_i]),
+               family = binomial)
+  
+  predicted_probabilities <- predict(model, newdata=dftau[predictors_i], type = "response")
+  
+  auccurve = pROC::roc(dftau$taupetbin, predicted_probabilities)   
+  
+  coord <- coords(auccurve, "best", best.method="youden", ret=c("threshold",
+                                                                "specificity", "sensitivity", "accuracy", "npv","ppv", "tn", "tp", "fn", "fp"))
+  
+  results_roc[[i]] <- data.frame(
+    fpr = auccurve$specificities,
+    tpr = auccurve$sensitivities,
+    variable = predictors_i[[1]])
+  
+  auc_model1 <- ci.auc(auccurve)
+  auc_model <- auc_model1[2]
+  ci_lower_m1 <- auc_model1[1]
+  ci_upper_m1 <- auc_model1[3]
+  accuracy <- (coord$tp + coord$tn) / length(predicted_probabilities)
+  
+  results_auc[[i]] <- data.frame(
+    variable = predictors_i[[1]],
+    ci_lower = ci_lower_m1,
+    ci_upper = ci_upper_m1,
+    auc = round(auc_model,3),
+    Sensitivity = round((coord$sensitivity),3),
+    Specificity = round((coord$specificity),3),
+    NPV = round((coord$npv),3),
+    PPV = round((coord$ppv),3),
+    Accuracy = round(accuracy, 3),
+    stringsAsFactors = FALSE
+  )
+}
+results_roc <- do.call(rbind, results_roc)
+results_auc <- do.call(rbind, results_auc)
+openxlsx::write.xlsx(results_auc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ROC_taupet_Nulisa_single.xlsx")
+```
+
+```{r tauPET AUC comparisons, echo=F}
+cutofftau <- 1.362
+datafr$taupetbin <- ifelse(datafr$tnic_cho_com_I_IV >= cutofftau, 1, 0)
+dftau <- datafr %>% filter(datafr$Exclude_tauPET %in% c(0,2,3))
+actual_labels <- as.numeric(dftau$taupetbin)
+dftau <- dftau %>% drop_na(taupetbin)
+#n = 447
+
+bstau <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  actual_labels <- d$taupetbin
+  fml1_string <- paste("taupetbin ~ scale(age) + gender +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  roc_curve1 <- pROC::roc(actual_labels, pred_prob1, quiet=T)
+  auc_model1 <- ci.auc(roc_curve1)[2]
+  fml2_string <- paste("taupetbin ~ scale(age) + gender +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve2 <- pROC::roc(actual_labels, pred_prob2, quiet=T)
+  auc_model2 <- ci.auc(roc_curve2)[2]
+  difference_auc <- roc_curve1$auc - roc_curve2$auc
+  return(c(difference_auc, auc_model1, auc_model2))
+}
+
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+results_auc_tau <- list()
+
+library(boot)
+library(pROC)
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dftau, 
+                         statistic = bstau, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    boot_aucdiff <- boot_results$t0[1]
+    results_underH0_aucdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue_aucdiff <- mean(abs(results_underH0_aucdiff) >= abs(boot_aucdiff))
+    ci1_auc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_auc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_aucdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_tau[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      AUC1 = round((boot_results$t0[2]),7),
+      aucci1_lower = round(ci1_auc[1],7),
+      aucci1_upper = round(ci1_auc[2],7),
+      AUC2 = round((boot_results$t0[3]),7),
+      aucci2_lower = round(ci2_auc[1],7),
+      aucci2_upper = round(ci2_auc[2],7), 
+      pvalue_auc = boot_pvalue_aucdiff,
+      aucdiff = round((boot_results$t0[1]),7),
+      cilow_aucdiff = round(cidiff_aucdiff[1],7),
+      cihigh_aucdiff=round(cidiff_aucdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_auc_tau <- do.call(rbind.data.frame, results_auc_tau)
+final_auc_tau$padj_auc <- round(p.adjust(final_auc_tau$pvalue_auc, method = "fdr"),3)
+openxlsx::write.xlsx(final_auc_tau,file="~/Documents/Projects/H-2-H plasma ptau217 assays/bootstrapsAUC_TauPET_Nulisa.xlsx")
+
+#final_auc_tau <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/bootstrapsAUC_TauPET_Nulisa.xlsx")
+
+test <- head(final_auc_tau, 1)
+test <- test %>% select(variable1,AUC1, aucci1_lower, aucci1_upper)
+colnames(test)[colnames(test) == "variable1"] <- "variable2"
+colnames(test)[colnames(test) == "AUC1"] <- "AUC2"
+colnames(test)[colnames(test) == "aucci1_lower"] <- "aucci2_lower"
+colnames(test)[colnames(test) == "aucci1_upper"] <- "aucci2_upper"
+xx <- final_auc_tau %>%
+  select(-variable1,-AUC1, -aucci1_lower, -aucci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+plot_data$Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181"))
+colnames(plot_data)[colnames(plot_data) == "AUC2"] <- "AUC"
+colnames(plot_data)[colnames(plot_data) == "aucci2_lower"] <- "AUC_CIlow"
+colnames(plot_data)[colnames(plot_data) == "aucci2_upper"] <- "AUC_CIhigh"
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$AUC, plot_data$AUC_CIlow, plot_data$AUC_CIhigh)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/Tau_AUC_table_Nulisa.xlsx")
+
+
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+AUC <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y = AUC,color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$AUC[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = AUC_CIlow, ymax = AUC_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", AUC)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits=c(0.7,1),breaks = seq(0.7, 1, by=0.05), expand = c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(y = "scaling",
+       x = element_blank(),
+       title = "AUC Tau-PET") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=10, face="bold"))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_ROC_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+##Tau-PET Accuracy
+```{r Accuracy tauPET bootstrapping + plots}
+
+bstau <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  fml1_string <- paste("taupetbin ~ scale(age) + gender +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  fml2_string <- paste("taupetbin ~ scale(age) + gender +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve1 <- roc(d$taupetbin, pred_prob1, quiet=T)
+  coordm1 <- coords(roc_curve1, "best", best.method = "youden")
+  threshold1 <- coordm1$threshold
+  pred_bin1 <- ifelse(pred_prob1 > threshold1, 1, 0)
+  roc_curve2 <- roc(d$taupetbin, pred_prob2, quiet=T)
+  coordm2 <- coords(roc_curve2, "best", best.method = "youden")
+  threshold2 <- coordm2$threshold
+  pred_bin2 <- ifelse(pred_prob2 > threshold2, 1, 0)
+  cm1 <- table(d$taupetbin, pred_bin1)
+  cm2 <- table(d$taupetbin, pred_bin2)
+  accuracy_m1 <- sum(diag(cm1)) / sum(cm1)
+  accuracy_m2 <- sum(diag(cm2)) / sum(cm2)
+  difference_acc <- accuracy_m1 - accuracy_m2
+  return(c(difference_acc, accuracy_m1, accuracy_m2))
+}
+
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+results_auc_tau_acc <- list()
+library(pROC)
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dftau, 
+                         statistic = bstau, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    
+    boot_accdiff <- boot_results$t0[1]
+    results_underH0_accdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[1])
+    boot_pvalue_accdiff <- mean(abs(results_underH0_accdiff) >= abs(boot_accdiff))
+    ci1_acc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_acc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_accdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_tau_acc[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      Accuracy1 = round((boot_results$t0[2]),7),
+      accci1_lower = round(ci1_acc[1],7),
+      accci1_upper = round(ci1_acc[2],7),
+      Accuracy2 = round((boot_results$t0[3]),7),
+      accci2_lower = round(ci2_acc[1],7),
+      accci2_upper = round(ci2_acc[2],7),
+      pvalue_accuracy = boot_pvalue_accdiff,
+      accdiff = round((boot_results$t0[1]),7),
+      cilow_accdiff = round(cidiff_accdiff[1],7),
+      cihigh_accdiff=round(cidiff_accdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_acc_tau <- do.call(rbind.data.frame, results_auc_tau_acc)
+final_acc_tau$padj_acc <- round(p.adjust(final_acc_tau$pvalue_acc, method = "fdr"),3)
+openxlsx::write.xlsx(final_acc_tau,file="~/Documents/Projects/H-2-H plasma ptau217 assays/bootstraps_Accuracy_TauPET_NULISA.xlsx")
+
+#final_acc_tau <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/bootstraps_Accuracy_TauPET_NULISA.xlsx")
+
+test <- head(final_acc_tau, 1)
+test <- test %>% select(variable1,Accuracy1, accci1_lower, accci1_upper)
+colnames(test)[colnames(test) == "variable1"] <- "variable2"
+colnames(test)[colnames(test) == "Accuracy1"] <- "Accuracy2"
+colnames(test)[colnames(test) == "accci1_lower"] <- "accci2_lower"
+colnames(test)[colnames(test) == "accci1_upper"] <- "accci2_upper"
+
+xx <- final_acc_tau %>%
+  select(-variable1,-Accuracy1, -accci1_lower, -accci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+plot_data$Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181"))
+colnames(plot_data)[colnames(plot_data) == "Accuracy2"] <- "ACC"
+colnames(plot_data)[colnames(plot_data) == "accci2_lower"] <- "ACC_CIlow"
+colnames(plot_data)[colnames(plot_data) == "accci2_upper"] <- "ACC_CIhigh"
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$ACC, plot_data$ACC_CIlow, plot_data$ACC_CIhigh)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/Tau_ACC_table_Nulisa.xlsx")
+
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+
+
+ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y = ACC,color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$ACC[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = ACC_CIlow, ymax = ACC_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", ACC)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits=c(0.7, 1),breaks = seq(0.7, 1, by=0.05), expand = c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(y =  "scaling",
+       x = element_blank(),
+       title = "Accuracy Tau-PET") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=10, face="bold"))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_Accuracy_NULISA.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+
+##Linear models
+
+```{r R2 comparisons AB, echo=F}
+
+library(boot)
+dfab <- datafr %>% drop_na(fnc_ber_com_composite)
+
+
+R2diff_AB <- function(data, indices, ref, comp) {
+      d <- data[indices,] # allows boot to select sample #indices = 1:365
+      fml1=as.formula(paste("scale(fnc_ber_com_composite) ~ scale(",ref,") + scale(age) + gender"))
+      mdl1_boot=lm(fml1, data=d)
+      mdl1_sum = summary(mdl1_boot)
+      fml2=as.formula(paste("scale(fnc_ber_com_composite) ~ scale(",comp,") + scale(age) + gender"))
+      mdl2_boot=lm(fml2, data=d)
+      mdl2_sum = summary(mdl2_boot)
+      r2_m1 <- mdl1_sum$adj.r.squared
+      r2_m2 <- mdl2_sum$adj.r.squared
+      diff <- r2_m1 - r2_m2
+      return(c(diff, r2_m1, r2_m2))
+ }
+ 
+results_r2_ab <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+      zref <- biomarkers[i]
+
+  for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+  
+        #hist(boot_results$t[,1])
+        set.seed(123)
+        boot_results <- boot(data = dfab, 
+                             statistic = R2diff_AB, 
+                             R = 1000, 
+                             ref = zref,
+                             comp = zcomp)
+        bootstrap_replicates <- boot_results$t
+        bootxxx <- boot_results$t0[1]
+        results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+        boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+        ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+        ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+        cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+      results_r2_ab[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+        comp = paste(zref,zcomp, sep = "_"),
+        variable1 = zref,
+        variable2 = zcomp,
+        R2diff = round((boot_results$t0[1]),7),
+        R2group1 = round((boot_results$t0[2]),7),
+        R2group2 = round((boot_results$t0[3]),7),
+        pvalue = boot_pvalue,
+        cidiff_low = round(cidiff[1],7),
+        cidiff_high = round(cidiff[2],7),
+        ci1_lower = round(ci1[1],7),
+        ci1_upper = round(ci1[2],7),
+        ci2_lower = round(ci2[1],7),
+        ci2_upper = round(ci2[2],7), 
+        plotname = biomarkers[i]
+        )
+  }
+}
+
+finalr2_ab <- do.call(rbind.data.frame, results_r2_ab)
+finalr2_ab$padj <- round(p.adjust(finalr2_ab$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(finalr2_ab,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_R2_Nulisa.xlsx")
+
+test <- head(finalr2_ab, 1)
+test <- test %>% select(R2group1, ci1_lower, ci1_upper)
+colnames(test)[colnames(test) == "R2group1"] <- "R2group2"
+colnames(test)[colnames(test) == "ci1_lower"] <- "ci2_lower"
+colnames(test)[colnames(test) == "ci1_upper"] <- "ci2_upper"
+xx <- finalr2_ab %>%
+  select(-R2group1, -ci1_lower, -ci1_upper)
+xx <- head(xx,5)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(R2group2, ci2_lower, ci2_upper)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$R2group2, table_data$ci2_lower, table_data$ci2_upper)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/AB_R2_table_Nulisa.xlsx")
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR2 = unique(c(finalr2_ab$R2group1, finalr2_ab$R2group2)),
+  unique_valuesR2_CIlow = unique(c(finalr2_ab$ci1_lower, finalr2_ab$ci2_lower)),
+  unique_valuesR2_CIhigh = unique(c(finalr2_ab$ci1_upper, finalr2_ab$ci2_upper))
+)
+
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+p <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y = unique_valuesR2,color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$unique_valuesR2[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = unique_valuesR2_CIlow, ymax = unique_valuesR2_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", unique_valuesR2)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits = c(0, 1), expand = c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(title = "Aβ-PET", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+```{r R2 comparison TAU, echo=FALSE, message=FALSE}
+dftau <- datafr %>% drop_na(tnic_cho_com_I_IV)
+dftau <- dftau %>% filter(Exclude_tauPET %in% c(0,2,3))
+
+R2diff_tau <- function(data, indices, ref, comp) {
+      d <- data[indices,] # allows boot to select sample #indices = 1:365
+      fml1=as.formula(paste("scale(tnic_cho_com_I_IV) ~ scale(",ref,") + scale(age) + gender"))
+      mdl1_boot=lm(fml1, data=d)
+      mdl1_sum = summary(mdl1_boot)
+      fml2=as.formula(paste("scale(tnic_cho_com_I_IV) ~ scale(",comp,") + scale(age) + gender"))
+      mdl2_boot=lm(fml2, data=d)
+      mdl2_sum = summary(mdl2_boot)
+      r2_m1 <- mdl1_sum$adj.r.squared
+      r2_m2 <- mdl2_sum$adj.r.squared
+      diff <- r2_m1 - r2_m2
+      return(c(diff, r2_m1, r2_m2))
+ }
+ 
+results_r2 <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+      zref <- biomarkers[i]
+
+  for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+
+        #hist(boot_results$t[,1])
+        set.seed(123)
+        boot_results <- boot(data = dftau, 
+                             statistic = R2diff_tau, 
+                             R = 1000, 
+                             ref = zref,
+                             comp = zcomp)
+       bootstrap_replicates <- boot_results$t
+        bootxxx <- boot_results$t0[1]
+        results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+        boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+        ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+        ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+        cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+      
+      results_r2[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+        comp = paste(zref,zcomp, sep = "_"),
+        variable1 = zref,
+        variable2 = zcomp,
+        R2diff = round((boot_results$t0[1]),3),
+        R2group1 = round((boot_results$t0[2]),3),
+        R2group2 = round((boot_results$t0[3]),3),
+        pvalue = boot_pvalue,
+        cidiff_low = round(cidiff[1],3),
+        cidiff_high = round(cidiff[2],3),
+        ci1_lower = round(ci1[1],3),
+        ci1_upper = round(ci1[2],3),
+        ci2_lower = round(ci2[1],3),
+        ci2_upper = round(ci2[2],3), 
+        plotname = biomarkers[i],
+        plot_R2group1 = round((boot_results$t0[2]),7),
+        plot_R2group2 = round((boot_results$t0[3]),7),
+        plot_ci1_lower = round(ci1[1],6),
+        plot_ci1_upper = round(ci1[2],6),
+        plot_ci2_lower = round(ci2[1],6),
+        plot_ci2_upper = round(ci2[2],6)
+        )
+  }
+}
+
+finalr2 <- do.call(rbind.data.frame, results_r2)
+finalr2$padj <- round(p.adjust(finalr2$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(finalr2,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_R2_Nulisa.xlsx")
+
+test <- head(finalr2, 1)
+test <- test %>% select(R2group1, ci1_lower, ci1_upper)
+colnames(test)[colnames(test) == "R2group1"] <- "R2group2"
+colnames(test)[colnames(test) == "ci1_lower"] <- "ci2_lower"
+colnames(test)[colnames(test) == "ci1_upper"] <- "ci2_upper"
+xx <- finalr2 %>%
+  select(-R2group1, -ci1_lower, -ci1_upper)
+xx <- head(xx,5)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(R2group2, ci2_lower, ci2_upper)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$R2group2, table_data$ci2_lower, table_data$ci2_upper)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/Tau_R2_table_Nulisa.xlsx")
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR2 = unique(c(finalr2$R2group1, finalr2$R2group2)),
+  unique_valuesR2_CIlow = unique(c(finalr2$ci1_lower, finalr2$ci2_lower)),
+  unique_valuesR2_CIhigh = unique(c(finalr2$ci1_upper, finalr2$ci2_upper))
+)
+
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+
+p <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")), 
+                                    y = unique_valuesR2, 
+                                    color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$unique_valuesR2[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = unique_valuesR2_CIlow, ymax = unique_valuesR2_CIhigh),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", unique_valuesR2)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits = c(0, 1), expand=c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+ labs(title = "Tau-PET", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+```{r R2 comparisons MMSE, echo=F}
+dfmmse <- datafr %>% drop_na(mmse_score)
+dfmmse <- dfmmse %>% filter(diagnosis_baseline_variable %in%c("Normal", "SCD", "AD", "MCI"))
+dfmmse=dfmmse[complete.cases(dfmmse[,c("age","gender","education_level_years_baseline_variable",biomarkers)]),]
+
+R2diff_mmse <- function(data, indices, ref, comp) {
+      d <- data[indices,] # allows boot to select sample #indices = 1:365
+      fml1=as.formula(paste("scale(mmse_score) ~ scale(",ref,") + scale(age) + gender + scale(education_level_years_baseline_variable)"))
+      mdl1_boot=lm(fml1, data=d)
+      mdl1_sum = summary(mdl1_boot)
+      fml2=as.formula(paste("scale(mmse_score) ~ scale(",comp,") + scale(age) + gender+ scale(education_level_years_baseline_variable)"))
+      mdl2_boot=lm(fml2, data=d)
+      mdl2_sum = summary(mdl2_boot)
+      r2_m1 <- mdl1_sum$adj.r.squared
+      r2_m2 <- mdl2_sum$adj.r.squared
+      diff <- r2_m1 - r2_m2
+      return(c(diff, r2_m1, r2_m2))
+      }
+      
+results_r2_mmse <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+      zref <- biomarkers[i]
+
+  for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+      
+        #hist(boot_results$t[,1])
+        set.seed(123)
+        boot_results <- boot(data = dfmmse, 
+                             statistic = R2diff_mmse, 
+                             R = 1000, 
+                             ref = zref,
+                             comp = zcomp)
+       bootstrap_replicates <- boot_results$t
+        bootxxx <- boot_results$t0
+        results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+        boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+        ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+        ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+        cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+        
+      results_r2_mmse[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+        comp = paste(zref,zcomp, sep = "_"),
+        variable1 = zref,
+        variable2 = zcomp,
+        R2diff = round((boot_results$t0[1]),3),
+        R2group1 = round((boot_results$t0[2]),3),
+        R2group2 = round((boot_results$t0[3]),3),
+        pvalue = boot_pvalue,
+        cidiff_low = round(cidiff[1],3),
+        cidiff_high = round(cidiff[2],3),
+        ci1_lower = round(ci1[1],3),
+        ci1_upper = round(ci1[2],3),
+        ci2_lower = round(ci2[1],3),
+        ci2_upper = round(ci2[2],3), 
+        plotname = biomarkers[i],
+        plot_R2group1 = round((boot_results$t0[2]),7),
+        plot_R2group2 = round((boot_results$t0[3]),7),
+        plot_ci1_lower = round(ci1[1],6),
+        plot_ci1_upper = round(ci1[2],6),
+        plot_ci2_lower = round(ci2[1],6),
+        plot_ci2_upper = round(ci2[2],6)
+        )
+  }
+}
+
+finalr2_mmse <- do.call(rbind.data.frame, results_r2_mmse)
+finalr2_mmse$padj <- round(p.adjust(finalr2_mmse$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(finalr2_mmse,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_R2_Nulisa.xlsx") #A+
+
+
+test <- head(finalr2_mmse, 1)
+test <- test %>% select(R2group1, ci1_lower, ci1_upper)
+colnames(test)[colnames(test) == "R2group1"] <- "R2group2"
+colnames(test)[colnames(test) == "ci1_lower"] <- "ci2_lower"
+colnames(test)[colnames(test) == "ci1_upper"] <- "ci2_upper"
+xx <- finalr2_mmse %>%
+  select(-R2group1, -ci1_lower, -ci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data <- plot_data %>% select(R2group2, ci2_lower, ci2_upper)
+plot_data$Assay <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+plot_data$plotcolors = c("1","2", "3", "4", "5", "6")
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$R2group2, plot_data$ci2_lower, plot_data$ci2_upper)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_R2_table_Nulisa.xlsx")
+
+colnames(plot_data)[colnames(plot_data) == "R2group2"] <- "R2"
+colnames(plot_data)[colnames(plot_data) == "ci2_lower"] <- "ci_low"
+colnames(plot_data)[colnames(plot_data) == "ci2_upper"] <- "ci_high"
+
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+
+map_to_color <- function(x) {
+  ifelse(x >= 5, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 5, "15", "19")  # Change the condition and colors as needed
+}
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+
+p <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")), 
+                                    y = R2, 
+                                    color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$unique_valuesR2[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = ci_low, ymax = ci_high),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", R2)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits = c(0, 1), expand=c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+  labs(title = "MMSE", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+```{r R2 comparisons PACC, echo=F}
+
+dfpacc <- datafr %>% drop_na(mPACC_v1)
+dfpacc <- dfpacc %>% filter(diagnosis_baseline_variable %in%c("Normal", "SCD", "MCI"))
+dfpacc=dfpacc[complete.cases(dfpacc[,c("age","gender","education_level_years_baseline_variable",biomarkers)]),]
+
+
+ R2diff <- function(data, indices, ref, comp) {
+      d <- data[indices,] # allows boot to select sample #indices = 1:365
+      fml1=as.formula(paste("scale(mPACC_v1) ~ scale(",ref,") + scale(age) + gender+ scale(education_level_years_baseline_variable)"))
+      mdl1_boot=lm(fml1, data=d)
+      mdl1_sum = summary(mdl1_boot)
+      fml2=as.formula(paste("scale(mPACC_v1) ~ scale(",comp,") + scale(age) + gender+ scale(education_level_years_baseline_variable)"))
+      mdl2_boot=lm(fml2, data=d)
+      mdl2_sum = summary(mdl2_boot)
+      r2_m1 <- mdl1_sum$adj.r.squared
+      r2_m2 <- mdl2_sum$adj.r.squared
+      diff <- r2_m1 - r2_m2
+      return(c(diff, r2_m1, r2_m2))
+ }
+ 
+results_r2_pacc <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+      zref <- biomarkers[i]
+
+  for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+          
+        #hist(boot_results$t[,1])
+        set.seed(123)
+        boot_results <- boot(data = dfpacc, 
+                             statistic = R2diff, 
+                             R = 1000, 
+                             ref = zref,
+                             comp = zcomp)
+       bootstrap_replicates <- boot_results$t
+        bootxxx <- boot_results$t0[1]
+        results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+        boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+         ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+        ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+        cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+        
+      results_r2_pacc[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+        comp = paste(zref,zcomp, sep = "_"),
+        variable1 = zref,
+        variable2 = zcomp,
+        R2diff = round((boot_results$t0[1]),3),
+        R2group1 = round((boot_results$t0[2]),3),
+        R2group2 = round((boot_results$t0[3]),3),
+        pvalue = boot_pvalue,
+        cidiff_low = round(cidiff[1],3),
+        cidiff_high = round(cidiff[2],3),
+        ci1_lower = round(ci1[1],3),
+        ci1_upper = round(ci1[2],3),
+        ci2_lower = round(ci2[1],3),
+        ci2_upper = round(ci2[2],3), 
+        plotname = biomarkers[i],
+        plot_R2group1 = round((boot_results$t0[2]),7),
+        plot_R2group2 = round((boot_results$t0[3]),7),
+        plot_ci1_lower = round(ci1[1],6),
+        plot_ci1_upper = round(ci1[2],6),
+        plot_ci2_lower = round(ci2[1],6),
+        plot_ci2_upper = round(ci2[2],6)
+        )
+  }
+}
+
+final_r2_pacc <- do.call(rbind.data.frame, results_r2_pacc)
+final_r2_pacc$padj <- round(p.adjust(final_r2_pacc$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(final_r2_pacc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/mPACC_R2_Nulisa.xlsx") #A+
+
+#final_r2_pacc <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/mPACC_R2_Nulisa.xlsx")
+
+test <- head(final_r2_pacc, 1)
+test <- test %>% select(R2group1, ci1_lower, ci1_upper)
+colnames(test)[colnames(test) == "R2group1"] <- "R2group2"
+colnames(test)[colnames(test) == "ci1_lower"] <- "ci2_lower"
+colnames(test)[colnames(test) == "ci1_upper"] <- "ci2_upper"
+xx <- final_r2_pacc %>%
+  select(-R2group1, -ci1_lower, -ci1_upper)
+xx <- head(xx,5)
+plot_data <- bind_rows(test, xx)
+plot_data <- plot_data %>% select(R2group2, ci2_lower, ci2_upper)
+plot_data$Assay <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+plot_data$plotcolors = c("1","2", "3", "4", "5", "6")
+plot_data$table_s <-sprintf("%.3f (%.3f,%.3f)", plot_data$R2group2, plot_data$ci2_lower, plot_data$ci2_upper)
+openxlsx::write.xlsx(plot_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/mPACC_R2_table_Nulisa.xlsx")
+
+colnames(plot_data)[colnames(plot_data) == "R2group2"] <- "R2"
+colnames(plot_data)[colnames(plot_data) == "ci2_lower"] <- "ci_low"
+colnames(plot_data)[colnames(plot_data) == "ci2_upper"] <- "ci_high"
+
+plot_data$plotcolors = c("1", "2", "3", "4", "5", "6")
+
+map_to_color <- function(x) {
+  ifelse(x >= 6, "#0461BD", "#93003a")  # Change the condition and colors as needed
+}
+
+map_to_shape <- function(x) {
+  ifelse(x >= 6, "15", "19")  # Change the condition and colors as needed
+}
+
+plot_data$color_plot <- map_to_color(plot_data$plotcolors)
+plot_data$shape_plot <- map_to_shape(plot_data$plotcolors)
+
+my_shapes <- c(15, 19, 17, 3, 5, 4, 8)
+
+
+p <- ggplot(data = plot_data, aes(x = factor(Assay, 
+                                               levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")), 
+                                    y = R2, 
+                                    color = color_plot, shape=shape_plot)) +
+    geom_hline(yintercept = plot_data$unique_valuesR2[5], color = "#0461BD", linetype = "dotted", alpha=0.5) +
+  coord_flip() +
+  geom_pointrange(aes(ymin = ci_low, ymax = ci_high),
+                  size = 0.6, lwd = 1.25, position = position_dodge(width = 0.2)) +
+  geom_text(aes(label = sprintf("%.2f", R2)),
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5, hjust = -0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")) + 
+  scale_y_continuous(limits = c(0, 1), expand=c(0,0)) +
+  scale_color_identity(guide = "none") +
+  scale_shape_manual(values = my_shapes, guide = "none") +
+ labs(title = "mPACC", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/PACC_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+##Longitudinal models
+
+##Longitudinal data
+
+```{r Long data, echo=F, include=F}
+library(lme4)
+library(ggeffects)
+library(readxl)
+library(tidyverse)
+
+data <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/longcsf217_NULISA.xlsx")
+merged_long <- as.data.frame(data)
+
+# Function to calculate time interval between visits
+difftime_years <- function(x) { 
+  delta <- difftime(x[-1], x[1], units = "days")/365 %>% as.integer() 
+  class(delta) <- NULL
+  attr(delta, "units") <- NULL
+  delta
+}
+
+#AB PET
+bf2.Ab.long <- merged_long %>% subset(!is.na(proc_flutemetamol_pet_date))
+bf2.Ab.long$proc_flutemetamol_pet_date <- bf2.Ab.long$proc_flutemetamol_pet_date %>% lubridate::parse_date_time(orders = "ymd") %>% as.Date()
+bf2.Ab.long <- bf2.Ab.long %>% arrange(sid, proc_flutemetamol_pet_date)
+bf2.Ab.long <- bf2.Ab.long %>% filter(!(sid %in% c("BF2095", "BF2485", "BF2517", "BF2126", "BF2253", "BF1106", "BF2204", "BF2674")))
+bf2.Ab.long <- bf2.Ab.long %>% drop_na(fnc_ber_com_composite)
+bf2.Ab.long <- bf2.Ab.long %>% group_by(sid)%>% dplyr::mutate(i_visit = 1:n())
+bf2.Ab.long <- bf2.Ab.long %>% group_by(sid)%>% dplyr::mutate(n_visit = n())
+bf2.Ab.long <- bf2.Ab.long %>% group_by(sid, n_visit) %>% mutate(time_years = c(0, difftime_years(proc_flutemetamol_pet_date)))
+bf2.Ab.long <- subset(bf2.Ab.long, n_visit > 1)
+
+##get total FU time AB PET
+bf2.Ab.long$proc_flutemetamol_pet_date <- as.Date(bf2.Ab.long$proc_flutemetamol_pet_date)
+bf2.Ab.long <- bf2.Ab.long %>% group_by(sid) 
+bf2.Ab.long <- bf2.Ab.long %>% mutate(follow_up_time = proc_flutemetamol_pet_date - min(proc_flutemetamol_pet_date))
+bf2.Ab.long <- bf2.Ab.long %>% group_by(sid) %>% mutate(total_fu = sum(follow_up_time/365))
+sd(bf2.Ab.long$total_fu)
+#length(unique(bf2.Ab.long$sid))
+
+#Tau PET
+bf2.tau.long <-merged_long %>% subset(!is.na(proc_tau_pet_date))
+bf2.tau.long <- bf2.tau.long %>% filter(excluded == 0)
+bf2.tau.long$proc_tau_pet_date <- bf2.tau.long$proc_tau_pet_date %>% lubridate::parse_date_time(orders = "ymd") %>% as.Date()
+bf2.tau.long <- bf2.tau.long %>% arrange(sid, proc_tau_pet_date)
+bf2.tau.long <- bf2.tau.long %>% drop_na(tnic_cho_com_I_IV)
+bf2.tau.long <- bf2.tau.long %>% filter(sid !="BF1131")
+bf2.tau.long <- bf2.tau.long %>% group_by(sid) %>% dplyr::mutate(i_visit = 1:n(), n_visit = n() )
+bf2.tau.long <- bf2.tau.long %<>% group_by(sid, n_visit) %>% mutate( time_years = c(0, difftime_years(proc_tau_pet_date)) )
+bf2.tau.long <- bf2.tau.long %>% filter(n_visit > 1)
+
+##get total FU time tau PET
+bf2.tau.long$proc_tau_pet_date <- as.Date(bf2.tau.long$proc_tau_pet_date)
+bf2.tau.long <- bf2.tau.long %>%group_by(sid) 
+bf2.tau.long <- bf2.tau.long %>% mutate(follow_up_time = proc_tau_pet_date - min(proc_tau_pet_date))
+bf2.tau.long <- bf2.tau.long %>% group_by(sid) %>% mutate(total_fu = sum(follow_up_time/365))
+sd(bf2.tau.long$total_fu)
+#length(unique(bf2.tau.long$sid))
+
+#MMSE long
+bf2.mmse.long <- merged_long %>% subset(!is.na(mmse_score))
+bf2.mmse.long <- bf2.mmse.long %>% filter(diagnosis_baseline_variable %in% c("Normal", "SCD", "MCI", "AD"))
+bf2.mmse.long$mmse_date <- bf2.mmse.long$mmse_date %>% lubridate::parse_date_time(orders = "ymd") %>% as.Date()
+bf2.mmse.long <- bf2.mmse.long %>% arrange(sid, mmse_date)
+bf2.mmse.long <- bf2.mmse.long %>% group_by(sid)%>% dplyr::mutate(i_visit = 1:n())
+bf2.mmse.long <- bf2.mmse.long %>% group_by(sid)%>% dplyr::mutate(n_visit = n())
+bf2.mmse.long <- bf2.mmse.long %>% group_by(sid, n_visit) %>% mutate(time_years = c(0, difftime_years(mmse_date)))
+bf2.mmse.long <- bf2.mmse.long %>% filter(n_visit > 1)
+#which.min(bf2.mmse.long$time_years)
+bf2.mmse.long <- bf2.mmse.long[-1,]
+
+##get total FU time MMSE
+bf2.mmse.long$mmse_date <- as.Date(bf2.mmse.long$mmse_date)
+bf2.mmse.long <- bf2.mmse.long %>%group_by(sid) 
+bf2.mmse.long <- bf2.mmse.long %>% mutate(follow_up_time = mmse_date - min(mmse_date))
+bf2.mmse.long <- bf2.mmse.long %>% group_by(sid) %>% mutate(total_fu = sum(follow_up_time/365))
+#mean(bf2.mmse.long$total_fu)
+#length(unique(bf2.mmse.long$sid))
+
+#PACC long
+bf2.cog.long <- merged_long %>% subset(!is.na(mPACC_v1))
+bf2.cog.long <- bf2.cog.long %>% filter(diagnosis_baseline_variable %in% c("Normal", "SCD", "MCI"))
+bf2.cog.long$visit_date <- bf2.cog.long$visit_date %>% lubridate::parse_date_time(orders = "ymd") %>% as.Date()
+bf2.cog.long <- bf2.cog.long %>% arrange(sid, visit_date)
+bf2.cog.long <- bf2.cog.long %>% group_by(sid)%>% dplyr::mutate(i_visit = 1:n())
+bf2.cog.long <- bf2.cog.long %>% group_by(sid)%>% dplyr::mutate(n_visit = n())
+bf2.cog.long <- bf2.cog.long %>% group_by(sid, n_visit) %>% mutate(time_years = c(0, difftime_years(visit_date)))
+bf2.cog.long <- bf2.cog.long %>% filter(n_visit > 1)
+
+##get total FU time MMSE
+bf2.cog.long$visit_date <- as.Date(bf2.cog.long$visit_date)
+bf2.cog.long <- bf2.cog.long %>%group_by(sid) 
+bf2.cog.long <- bf2.cog.long %>% mutate(follow_up_time = visit_date - min(visit_date))
+bf2.cog.long <- bf2.cog.long %>% group_by(sid) %>% mutate(total_fu = sum(follow_up_time/365))
+#mean(bf2.cog.long$total_fu)
+#length(unique(bf2.cog.long$sid))
+
+```
+
+
+
+##R2 comparisons
+
+```{r longitudinal ABPET R2, include=FALSE, echo =FALSE}
+
+biomarkers <- c("zscoreswashurref", "zscoreswashuref", "zscoreslilref", "zscoresnulisa",
+                "zscoresptau181_ab42_log", "zscoresptau181")
+
+library(broom)
+library(lme4)
+m1=lmer(fnc_ber_com_composite ~ time_years + (1 + time_years|sid), data=bf2.Ab.long, control = lmerControl(optimizer = "Nelder_Mead"), REML=F)
+tmp.coef <- coef(m1)$sid["time_years"]
+tmp.coef$sid <- rownames(tmp.coef)
+merged_ab <- bf2.Ab.long %>% left_join(tmp.coef, by="sid")
+merged_ab=merged_ab %>% filter(!duplicated(sid)) #194 full 
+merged_ab=merged_ab[complete.cases(merged_ab[,c("age","gender_baseline_variable","time_years.y",biomarkers)]),]
+
+
+#Bootstrap
+library(boot)
+bootstraps <-list()
+
+betadiff <- function(data, indices, ad, ref, comp) {
+          d <- data[indices,] # allows boot to select sample #indices = 1:365
+          fml1 <- as.formula(paste("scale(time_years.y) ~ scale(",ref,") + scale(age) + gender_baseline_variable"))
+          mdl1_boot=lm(fml1, data=d)
+          mdl1_sum = summary(mdl1_boot)
+          fml2 <- as.formula(paste("scale(time_years.y) ~ scale(",comp,") + scale(age) + gender_baseline_variable"))
+          mdl2_boot=lm(fml2, data=d)
+          mdl2_sum = summary(mdl2_boot)
+          b_m1 <- coef(mdl1_sum)[2] 
+          b_m2 <- coef(mdl2_sum)[2] 
+          r_m1 <- mdl1_sum$adj.r.squared
+          r_m2 <- mdl2_sum$adj.r.squared
+          diffb <- (b_m1 - b_m2)
+          diffr2 <- (r_m1-r_m2)
+          return(c(diffb, b_m1, b_m2, diffr2, r_m1, r_m2))
+          }
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+    for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+          set.seed(123)
+          boot_results <- boot(data = merged_ab, 
+                       statistic = betadiff, 
+                       R = 1000, 
+                       ref = zref,
+                      comp = zcomp)
+          bootstrap_replicates <- boot_results$t
+          boot_r2dif <- boot_results$t0[4]
+          results_underH0_r2dif <- bootstrap_replicates[,4] - mean(bootstrap_replicates[,4])
+          boot_pvalue_r2diff <- mean(abs(results_underH0_r2dif) >= abs(boot_r2dif))
+          ci1r2 <- quantile(boot_results$t[,5], c(0.025, 0.975))
+          ci2r2 <- quantile(boot_results$t[,6], c(0.025, 0.975))
+          boot_r21 <- boot_results$t[,5]
+          boot_r22 <- boot_results$t[,6]
+
+      namesvars <- paste(zref, "_", zcomp)
+      
+      result_df <- data.frame(model = namesvars,
+                      pvalue_r2 = round((boot_pvalue_r2diff),3), 
+                      r2diff = round((boot_results$t0[4]),7),
+                      r21 =round((boot_results$t0[5]),7),
+                      r22 = round((boot_results$t0[6]),7),
+                      ci1_r2low = round((ci1r2[1]),7),
+                      ci1_r2high = round((ci1r2[2]),7),
+                      ci2_r2low = round((ci2r2[1]),7),
+                      ci2_r2high = round((ci2r2[2]),7))
+      
+      bootstraps[[length(bootstraps) + 1]] <- result_df
+    }
+}
+
+final_result_boots <- do.call(rbind.data.frame, bootstraps)
+final_result_boots$padj_r2 <- round(p.adjust(final_result_boots$pvalue_r2, method = "fdr"),3)
+openxlsx::write.xlsx(final_result_boots,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/long_ABPET_R2_Nulisa.xlsx")
+
+final_result_boots <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/long_ABPET_R2_Nulisa.xlsx")
+
+
+test <- head(final_result_boots, 1)
+test <- test %>% select(r21, ci1_r2low, ci1_r2high)
+colnames(test)[colnames(test) == "r21"] <- "r22"
+colnames(test)[colnames(test) == "ci1_r2low"] <- "ci2_r2low"
+colnames(test)[colnames(test) == "ci1_r2high"] <- "ci2_r2high"
+
+xx <- final_result_boots %>%
+  select(-r21, -ci1_r2low, -ci1_r2high)
+xx <- head(xx,5)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(r22, ci2_r2low, ci2_r2high)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$r22, table_data$ci2_r2low, table_data$ci2_r2high)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_long_R2_table_NULISA.xlsx")
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR = unique(c(final_result_boots$r21, final_result_boots$r22)),
+  unique_valuesR_CIlow = unique(c(final_result_boots$ci1_r2low, final_result_boots$ci2_r2low)),
+  unique_valuesR_CIhigh = unique(c(final_result_boots$ci1_r2high, final_result_boots$ci2_r2high))
+)
+
+my_palette <- c('#93003a','#93003a','#93003a','#93003a', "#0461BD", "#0461BD")
+my_shapes <- c(15,15,15,15,15,19,19,19)
+
+#R2
+
+p6 <-ggplot(data=plot_data, aes(x=factor(Assay,levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y=unique_valuesR)) +
+    geom_hline(yintercept = plot_data$unique_valuesR[5], color = "#0461BD", linetype = "dotted", alpha=0.5)+ 
+
+  coord_flip()+
+  geom_pointrange(aes(x=factor(Assay,level = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),  
+                      ymin=round(unique_valuesR_CIlow,3), ymax=round(unique_valuesR_CIhigh,3),color = Assay), 
+                      size = 0.6,lwd = 1.25, position = position_dodge(width=0.2))+
+      geom_text(aes(label = sprintf("%.2f", unique_valuesR), color=Assay), position = position_dodge(width=0.75), vjust=-0.5,
+                hjust=-0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"))+
+  scale_y_continuous(limits=c(0, 1), expand=c(0,0))+
+  scale_color_manual(values = rev(my_palette),breaks= c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),guide = "none")+
+  scale_shape_manual(values = my_shapes,breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),guide = "none")+
+  labs(title = "Aβ-PET (rate of change)", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/AB_longitudinal_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+```
+
+```{r longitudinal TauPET R2, include=FALSE, echo =FALSE}
+m2=lmer(tnic_cho_com_I_IV ~ time_years + (1 + time_years|sid), data=bf2.tau.long, control = lmerControl(optimizer = "Nelder_Mead"), REML=F)
+tmp.coef.tau <- coef(m2)$sid["time_years"]
+tmp.coef.tau$sid <- rownames(tmp.coef.tau)
+merged_tau <- bf2.tau.long %>% left_join(tmp.coef.tau, by="sid")
+merged_tau=merged_tau %>% filter(!duplicated(sid))
+merged_tau=merged_tau[complete.cases(merged_tau[,c("age","gender_baseline_variable","time_years.y",biomarkers)]),]
+
+#Bootstrap
+library(boot)
+bootstraps_tau <-list()
+
+betadiff <- function(data, indices, ad, ref, comp) {
+          d <- data[indices,] # allows boot to select sample #indices = 1:365
+          fml1 <- as.formula(paste("scale(time_years.y) ~ scale(",ref,") + scale(age) + gender_baseline_variable"))
+          mdl1_boot=lm(fml1, data=d)
+          mdl1_sum = summary(mdl1_boot)
+          fml2 <- as.formula(paste("scale(time_years.y) ~ scale(",comp,") + scale(age) + gender_baseline_variable"))
+          mdl2_boot=lm(fml2, data=d)
+          mdl2_sum = summary(mdl2_boot)
+          b_m1 <- coef(mdl1_sum)[2] 
+          b_m2 <- coef(mdl2_sum)[2] 
+          r_m1 <- mdl1_sum$adj.r.squared
+          r_m2 <- mdl2_sum$adj.r.squared
+          diffb <- (b_m1 - b_m2)
+          diffr2 <- (r_m1-r_m2)
+          return(c(diffb, b_m1, b_m2, diffr2, r_m1, r_m2))
+}
+
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+    for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+  
+      set.seed(123)
+      boot_results <- boot(data = merged_tau, 
+                       statistic = betadiff, 
+                       R = 1000, 
+                       ref = zref,
+                      comp = zcomp)
+          bootstrap_replicates <- boot_results$t
+          boot_r2dif <- boot_results$t0[4]
+          results_underH0_r2dif <- bootstrap_replicates[,4] - mean(bootstrap_replicates[,4])
+          boot_pvalue_r2diff <- mean(abs(results_underH0_r2dif) >= abs(boot_r2dif))
+          ci1r2 <- quantile(boot_results$t[,5], c(0.025, 0.975))
+          ci2r2 <- quantile(boot_results$t[,6], c(0.025, 0.975))
+          boot_r21 <- boot_results$t[,5]
+          boot_r22 <- boot_results$t[,6]
+
+      namesvars <- paste(zref, "_", zcomp)
+      
+      result_df <- data.frame(model = namesvars,
+                      pvalue_r2 = round((boot_pvalue_r2diff),3), 
+                      r2diff = round((boot_results$t0[4]),7),
+                      r21 =round((boot_results$t0[5]),7),
+                      r22 = round((boot_results$t0[6]),7),
+                      ci1_r2low = round((ci1r2[1]),7),
+                      ci1_r2high = round((ci1r2[2]),7),
+                      ci2_r2low = round((ci2r2[1]),7),
+                      ci2_r2high = round((ci2r2[2]),7))
+      bootstraps_tau[[length(bootstraps_tau) + 1]] <- result_df
+     }
+}
+
+final_result_boots_tau <- do.call(rbind.data.frame, bootstraps_tau)
+final_result_boots_tau$padj_r2 <- round(p.adjust(final_result_boots_tau$pvalue_r2, method = "fdr"),3)
+
+openxlsx::write.xlsx(final_result_boots_tau,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/long_TauPET_boot_R2_Nulisa.xlsx")
+
+test <- head(final_result_boots_tau, 1)
+test <- test %>% select(r21, ci1_r2low, ci1_r2high)
+colnames(test)[colnames(test) == "r21"] <- "r22"
+colnames(test)[colnames(test) == "ci1_r2low"] <- "ci2_r2low"
+colnames(test)[colnames(test) == "ci1_r2high"] <- "ci2_r2high"
+
+xx <- final_result_boots_tau %>%
+  select(-r21, -ci1_r2low, -ci1_r2high)
+xx <- head(xx,5)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(r22, ci2_r2low, ci2_r2high)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$r22, table_data$ci2_r2low, table_data$ci2_r2high)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_long_R2_NULISA.xlsx")
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR = unique(c(final_result_boots_tau$r21, final_result_boots_tau$r22)),
+  unique_valuesR_CIlow = unique(c(final_result_boots_tau$ci1_r2low, final_result_boots_tau$ci2_r2low)),
+  unique_valuesR_CIhigh = unique(c(final_result_boots_tau$ci1_r2high, final_result_boots_tau$ci2_r2high))
+)
+
+my_palette <- c('#93003a','#93003a','#93003a','#93003a', "#0461BD", "#0461BD")
+my_shapes <- c(15, 15, 15, 15, 15, 19, 19, 19)
+
+#R2
+
+p6 <-ggplot(data=plot_data, aes(x=factor(Assay,level = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y=unique_valuesR)) +
+    geom_hline(yintercept = plot_data$unique_valuesR[5], color = "#0461BD", linetype = "dotted", alpha=0.5)+ 
+  coord_flip()+
+  geom_pointrange(aes(x=factor(Assay,level = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),  
+                      ymin=round(unique_valuesR_CIlow,3), ymax=round(unique_valuesR_CIhigh,3),color = Assay), 
+                      size = 0.6,lwd = 1.25, position = position_dodge(width=0.2))+
+      geom_text(aes(label = sprintf("%.2f", unique_valuesR), color=Assay), position = position_dodge(width=0.75), vjust=-0.5,
+                hjust=-0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"))+ 
+  scale_y_continuous(limits=c(0, 1), expand=c(0,0))+
+  scale_color_manual(values = rev(my_palette),
+                     breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),
+                     guide = "none")+
+  scale_shape_manual(values = my_shapes,
+                     breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),
+                     guide = "none")+
+  labs(title = "Tau-PET rate of change", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_longitudinal_R2_NULISA.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+```{r longitudinal MMSE R2, include=FALSE, echo =FALSE}
+m1=lmer(mmse_score ~ time_years + (1 + time_years|sid), data=bf2.mmse.long, control = lmerControl(optimizer = "Nelder_Mead"), REML=F)
+bf2.mmse.long$RISlope<-predict(m1, newdata=bf2.mmse.long)
+tmp.coef <- coef(m1)$sid["time_years"]
+tmp.coef$sid <- rownames(tmp.coef)
+merged_mmse <- bf2.mmse.long %>% left_join(tmp.coef, by="sid")
+merged_mmse=merged_mmse %>% filter(!duplicated(sid))
+merged_mmse$cog_stat <- ifelse(merged_mmse$cognitive_status_baseline_variable %in% c("Normal", "SCD"), 0, 1)
+merged_mmse$cog_stat <- as.factor(as.numeric(merged_mmse$cog_stat))
+merged_mmse=merged_mmse[complete.cases(merged_mmse[,c("age","gender_baseline_variable","time_years.y", "education_level_years_baseline_variable",biomarkers)]),]
+
+#Bootstrap
+bootstraps_mmse <-list()
+
+betadiff <- function(data, indices, ad, ref, comp) {
+          d <- data[indices,] # allows boot to select sample #indices = 1:365
+          fml1 <- as.formula(paste("scale(time_years.y) ~ scale(",ref,") + scale(age) + gender_baseline_variable+ scale(education_level_years_baseline_variable)"))
+          mdl1_boot=lm(fml1, data=d)
+          mdl1_sum = summary(mdl1_boot)
+          fml2 <- as.formula(paste("scale(time_years.y) ~ scale(",comp,") + scale(age) + gender_baseline_variable+ scale(education_level_years_baseline_variable)"))
+          mdl2_boot=lm(fml2, data=d)
+          mdl2_sum = summary(mdl2_boot)
+          b_m1 <- coef(mdl1_sum)[2] 
+          b_m2 <- coef(mdl2_sum)[2] 
+          r_m1 <- mdl1_sum$adj.r.squared
+          r_m2 <- mdl2_sum$adj.r.squared
+          diffb <- (b_m1 - b_m2)
+          diffr2 <- (r_m1-r_m2)
+          return(c(diffb, b_m1, b_m2, diffr2, r_m1, r_m2))
+}
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+    for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+  
+          set.seed(123)
+      boot_results <- boot(data = merged_mmse, 
+                       statistic = betadiff, 
+                       R =1000, 
+                       ref = zref,
+                      comp = zcomp)
+          bootstrap_replicates <- boot_results$t
+          boot_r2dif <- boot_results$t0[4]
+          results_underH0_r2dif <- bootstrap_replicates[,4] - mean(bootstrap_replicates[,4])
+          boot_pvalue_r2diff <- mean(abs(results_underH0_r2dif) >= abs(boot_r2dif))
+          ci1r2 <- quantile(boot_results$t[,5], c(0.025, 0.975))
+          ci2r2 <- quantile(boot_results$t[,6], c(0.025, 0.975))
+          boot_r21 <- boot_results$t[,5]
+          boot_r22 <- boot_results$t[,6]
+
+      namesvars <- paste(zref, "_", zcomp)
+      
+      result_df <- data.frame(model = namesvars,
+                      pvalue_r2 = round((boot_pvalue_r2diff),3), 
+                      r2diff = round((boot_results$t0[4]),7),
+                      r21 =round((boot_results$t0[5]),7),
+                      r22 = round((boot_results$t0[6]),7),
+                      ci1_r2low = round((ci1r2[1]),7),
+                      ci1_r2high = round((ci1r2[2]),7),
+                      ci2_r2low = round((ci2r2[1]),7),
+                      ci2_r2high = round((ci2r2[2]),7))
+      
+      bootstraps_mmse[[length(bootstraps_mmse) + 1]] <- result_df
+     }
+}
+
+final_result_boots_mmse <- do.call(rbind.data.frame, bootstraps_mmse)
+final_result_boots_mmse$padj_r2 <- round(p.adjust(final_result_boots_mmse$pvalue_r2, method = "fdr"),3)
+
+openxlsx::write.xlsx(final_result_boots_mmse,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_long_R2_Nulisa.xlsx")
+
+test <- head(final_result_boots_mmse, 1)
+test <- test %>% select(r21, ci1_r2low, ci1_r2high)
+colnames(test)[colnames(test) == "r21"] <- "r22"
+colnames(test)[colnames(test) == "ci1_r2low"] <- "ci2_r2low"
+colnames(test)[colnames(test) == "ci1_r2high"] <- "ci2_r2high"
+
+xx <- final_result_boots_mmse %>%
+  select(-r21, -ci1_r2low, -ci1_r2high)
+xx <- head(xx,5)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(r22, ci2_r2low, ci2_r2high)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$r22, table_data$ci2_r2low, table_data$ci2_r2high)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_long_R2_table_NULISA.xlsx")
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR = unique(c(final_result_boots_mmse$r21, final_result_boots_mmse$r22)),
+  unique_valuesR_CIlow = unique(c(final_result_boots_mmse$ci1_r2low, final_result_boots_mmse$ci2_r2low)),
+  unique_valuesR_CIhigh = unique(c(final_result_boots_mmse$ci1_r2high, final_result_boots_mmse$ci2_r2high))
+)
+
+my_palette <- c('#93003a','#93003a','#93003a','#93003a', "#0461BD", "#0461BD")
+my_shapes <- c(15, 15,15,15,19, 19, 19)
+
+#R2
+
+p6 <-ggplot(data=plot_data, aes(x=factor(Assay,levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y=unique_valuesR)) +
+      geom_hline(yintercept = plot_data$unique_valuesR[5], color = "#0461BD", linetype = "dotted", alpha=0.5)+ 
+  coord_flip()+
+  geom_pointrange(aes(x=factor(Assay,level = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),  
+                      ymin=round(unique_valuesR_CIlow,3), ymax=round(unique_valuesR_CIhigh,3),color = Assay), 
+                      size = 0.6,lwd = 1.25, position = position_dodge(width=0.2))+
+      geom_text(aes(label = sprintf("%.2f", unique_valuesR), color=Assay), position = position_dodge(width=0.75), vjust=-0.5,
+                hjust=-0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"))+
+  scale_y_continuous(limits=c(0, 1), expand=c(0,0))+
+  scale_color_manual(values = rev(my_palette),
+                     breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),guide = "none")+
+  scale_shape_manual(values = my_shapes,breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),
+                     guide = "none")+
+ labs(title = "MMSE (rate of change)", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+
+p6
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/MMSE_longitudinal_R2_NULISA.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+```{r longitudinal PACC R2, include=FALSE, echo =FALSE}
+m1=lmer(mPACC_v1 ~ time_years + (1 + time_years|sid), data=bf2.cog.long, control = lmerControl(optimizer = "Nelder_Mead"), REML=F)
+tmp.coef <- coef(m1)$sid["time_years"]
+tmp.coef$sid <- rownames(tmp.coef)
+merged_mpaccv1 <- bf2.cog.long %>% left_join(tmp.coef, by="sid")
+merged_mpaccv1=merged_mpaccv1 %>% filter(!duplicated(sid))
+merged_mpaccv1=merged_mpaccv1[complete.cases(merged_mpaccv1[,c("age","gender_baseline_variable","time_years.y", "education_level_years_baseline_variable",biomarkers)]),]
+merged_mpaccv1$cog_stat <- ifelse(merged_mpaccv1$cognitive_status_baseline_variable %in% c("Normal", "SCD"), 0, 1)
+merged_mpaccv1$cog_stat <- as.factor(as.numeric(merged_mpaccv1$cog_stat))
+
+#Bootstrap
+bootstraps_pacc <-list()
+
+betadiff <- function(data, indices, ad, ref, comp) {
+          d <- data[indices,] # allows boot to select sample #indices = 1:365
+          fml1 <- as.formula(paste("scale(time_years.y) ~ scale(",ref,") + scale(age) + gender_baseline_variable+ scale(education_level_years_baseline_variable)"))
+          mdl1_boot=lm(fml1, data=d)
+          mdl1_sum = summary(mdl1_boot)
+          fml2 <- as.formula(paste("scale(time_years.y) ~ scale(",comp,") + scale(age) + gender_baseline_variable+ scale(education_level_years_baseline_variable)"))
+          mdl2_boot=lm(fml2, data=d)
+          mdl2_sum = summary(mdl2_boot)
+          b_m1 <- coef(mdl1_sum)[2] 
+          b_m2 <- coef(mdl2_sum)[2] 
+          r_m1 <- mdl1_sum$adj.r.squared
+          r_m2 <- mdl2_sum$adj.r.squared
+          diffb <- (b_m1 - b_m2)
+          diffr2 <- (r_m1-r_m2)
+          return(c(diffb, b_m1, b_m2, diffr2, r_m1, r_m2))
+          }
+
+library(boot)
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+    for (j in (i + 1):length(biomarkers)) {
+      zcomp <- biomarkers[j]
+          
+          set.seed(123)
+      boot_results <- boot(data = merged_mpaccv1, 
+                       statistic = betadiff, 
+                       R = 1000, 
+                       ref = zref,
+                      comp = zcomp)
+          bootstrap_replicates <- boot_results$t
+          boot_r2dif <- boot_results$t0[4]
+          results_underH0_r2dif <- bootstrap_replicates[,4] - mean(bootstrap_replicates[,4])
+          boot_pvalue_r2diff <- mean(abs(results_underH0_r2dif) >= abs(boot_r2dif))
+          ci1r2 <- quantile(boot_results$t[,5], c(0.025, 0.975))
+          ci2r2 <- quantile(boot_results$t[,6], c(0.025, 0.975))
+          boot_r21 <- boot_results$t[,5]
+          boot_r22 <- boot_results$t[,6]
+
+      namesvars <- paste(zref, "_", zcomp)
+      
+      result_df <- data.frame(model = namesvars,
+                      pvalue_r2 = round((boot_pvalue_r2diff),3), 
+                      r2diff = round((boot_results$t0[4]),7),
+                      r21 =round((boot_results$t0[5]),7),
+                      r22 = round((boot_results$t0[6]),7),
+                      ci1_r2low = round((ci1r2[1]),7),
+                      ci1_r2high = round((ci1r2[2]),7),
+                      ci2_r2low = round((ci2r2[1]),7),
+                      ci2_r2high = round((ci2r2[2]),7)
+      )
+        bootstraps_pacc[[length(bootstraps_pacc) + 1]] <- result_df
+     }
+}
+
+final_result_boots_pacc <- do.call(rbind.data.frame, bootstraps_pacc)
+final_result_boots_pacc$padj_r2 <- round(p.adjust(final_result_boots_pacc$pvalue_r2, method = "fdr"),3)
+
+openxlsx::write.xlsx(final_result_boots_pacc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/PACC_long_R2_Nulisa.xlsx")
+
+test <- head(final_result_boots_pacc, 1)
+test <- test %>% select(r21, ci1_r2low, ci1_r2high)
+colnames(test)[colnames(test) == "r21"] <- "r22"
+colnames(test)[colnames(test) == "ci1_r2low"] <- "ci2_r2low"
+colnames(test)[colnames(test) == "ci1_r2high"] <- "ci2_r2high"
+
+xx <- final_result_boots_pacc %>%
+  select(-r21, -ci1_r2low, -ci1_r2high)
+xx <- head(xx,3)
+table_data <- bind_rows(test, xx)
+table_data <- table_data %>% select(r22, ci2_r2low, ci2_r2high)
+table_data$names <- c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")
+table_data$table_s <-sprintf("%.3f (%.3f,%.3f)", table_data$r22, table_data$ci2_r2low, table_data$ci2_r2high)
+openxlsx::write.xlsx(table_data,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/PACC_long_R2_table_Nulisa.xlsx")
+
+
+plot_data <- data.frame(
+  Assay = as.factor(c("%p-tau217 WashU", "p-tau217 WashU", "p-tau217 Lilly", "p-tau217 NULISA", "p-tau181/AB42", "p-tau181")),
+  unique_valuesR = unique(c(final_result_boots_pacc$r21, final_result_boots_pacc$r22)),
+  unique_valuesR_CIlow = unique(c(final_result_boots_pacc$ci1_r2low, final_result_boots_pacc$ci2_r2low)),
+  unique_valuesR_CIhigh = unique(c(final_result_boots_pacc$ci1_r2high, final_result_boots_pacc$ci2_r2high))
+)
+
+my_palette <- c('#93003a','#93003a','#93003a','#93003a', "#0461BD", "#0461BD")
+my_shapes <- c(15, 15, 15, 15, 15, 19, 19, 19)
+
+#R2
+
+p6 <-ggplot(data=plot_data, aes(x=factor(Assay,levels = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),y=unique_valuesR)) +
+      geom_hline(yintercept = plot_data$unique_valuesR[5], color = "#0461BD", linetype = "dotted", alpha=0.5)+ 
+  coord_flip()+
+  geom_pointrange(aes(x=factor(Assay,level = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU")),  
+                      ymin=round(unique_valuesR_CIlow,3), ymax=round(unique_valuesR_CIhigh,3),color = Assay), 
+                      size = 0.6,lwd = 1.25, position = position_dodge(width=0.2))+
+      geom_text(aes(label = sprintf("%.2f", unique_valuesR), color=Assay), position = position_dodge(width=0.75), vjust=-0.5,
+                hjust=-0.25, size = 4) +
+  scale_x_discrete(limits = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"))+
+  scale_y_continuous(limits=c(0, 1), expand=c(0,0))+
+  scale_color_manual(values = rev(my_palette),
+                     breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),guide = "none")+
+  scale_shape_manual(values = my_shapes,breaks = c("p-tau181", "p-tau181/AB42", "p-tau217 NULISA", "p-tau217 Lilly","p-tau217 WashU","%p-tau217 WashU"),
+                     guide = "none")+
+labs(title = "mPACC (rate of change)", x = element_blank(),y = "Adj. R2 (95% CI)") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        panel.border = element_rect(linewidth = 0.5, fill = NA),
+        plot.title = element_text(hjust=0.5, size=12, face="bold"), 
+        axis.title.x = element_text(size=11))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/PACC_longitudinal_R2_Nulisa.pdf",device = "pdf",width = 100, dpi=500, height = 75, units = "mm")
+
+```
+
+
+
+
+
+
+#Sup. Fig 19-20 code (NULISA single vs. multi)
+
+```{r match data, echo=F}
+
+#match
+nulisa_single_upd$`Sample Name` <- gsub("GUPlasma_\\s+|\\s+12.5X\\s|\\(|\\)\\s", "",nulisa_single_upd$`Sample Name`)
+nulisa_single_upd$`Sample Name` <- gsub("^\\s+|\\s+$", "", nulisa_single_upd$`Sample Name`)
+print(nulisa_single_upd$`Sample Name`)
+overlap_ids <- intersect(nulisa_single_upd$`Sample Name`, nulisa_single_new$`Sample Name`)
+length(overlap_ids) 
+
+nulisa_upd <- merge(nulisa_single_new, nulisa_single_upd, by = "Sample Name",all.x = TRUE)
+nulisa_upd$`Concentration Mean (pg/mL)` <- ifelse(!is.na(nulisa_upd$`Re-test (pg/mL)`), nulisa_upd$`Re-test (pg/mL)`, nulisa_upd$`Concentration Mean (pg/mL)`)
+nulisa_single_new <- nulisa_upd
+
+#OLD
+sum(nulisa$NPQ < nulisa$LOD) #
+nulisa_total <- nulisa %>% left_join(nulisa_single_old, by="sid")
+nulisa_total <- nulisa_total%>%drop_na(Plasma_ptau217_pgml_NulisaSinglePelx_2024) 
+
+#NEW
+nulisa_total2 <- nulisa %>% left_join(nulisa_single_new, by="sid")
+nulisa_total2$`Concentration Mean (pg/mL)` <- as.numeric(as.character(nulisa_total2$`Concentration Mean (pg/mL)`))
+nulisa_total2 <- nulisa_total2%>%drop_na(`Concentration Mean (pg/mL)`) 
+
+merged <- datafr %>%
+  left_join(nulisa_total2, 
+            by = "sid")
+
+merged <- merged %>% filter(Visit == 0)
+merged <- merged %>% drop_na(`Concentration Mean (pg/mL)`, NPQ) #679
+merged <- distinct(merged, sid, .keep_all = TRUE)
+
+#z-scoring for this dataset
+NULISAptau217log <- log10(merged$`Concentration Mean (pg/mL)`)
+#NULISAptau217log <- log10(merged$Plasma_ptau217_pgml_NulisaSinglePelx_2024)
+merged["NULISAlog"] <- NULISAptau217log 
+
+#plot(nulisa_total2$NPQ, log2(nulisa_total2$`Concentration Mean (pg/mL)`))
+# ##remove the one outlier
+merged <- subset(merged, sid != "BF3580")#
+
+##z-scoring based on CU, AB-
+cu <- merged %>% subset(Abnormal_CSF_Ab42_Ab40_Ratio %in% c("0"))
+cu <- cu %>% subset(diagnosis_baseline_variable %in% c("Normal", "SCD")) #n = 91, nu n=136
+
+mean(log10(2^(cu$NPQ)))
+sd(log10(2^(cu$NPQ)))
+
+mean(cu$NULISAlog)
+sd(cu$NULISAlog)
+
+# merged$zscoresnulisa_multi <- ((merged$NPQ - 10.932)/0.373)
+# range(merged$zscoresnulisa_multi)
+merged$zscoresnulisa_multi <- (((log10(2^(merged$NPQ))) - 3.293)/0.109)
+#merged$zscoresnulisa_single <- ((merged$NULISAlog + 0.242)/0.279) #before re testing
+merged$zscoresnulisa_single <- ((merged$NULISAlog + 0.233)/0.233) #after re-testing
+
+datafr <- merged 
+datafr <- merged %>% drop_na(zscoresnulisa_single, zscoresnulisa_multi)
+
+```
+
+````{r correlations, echo=F}
+
+##Correlations NULISA----
+library(Hmisc)
+library(psych)
+library(corrplot)
+library(ggplot2)
+
+formula1 <- as.formula(paste("scale(zscoresnulisa_multi)~scale(zscoresnulisa_single)"))
+model1 <- lm(formula1, data = datafr)
+rsqr1 <- summary(model1)$adj.r.squared
+beta1 <- summary(model1)$coefficient[2]
+formula2 <- as.formula(paste("scale(zscoresnulisa_multi)~scale(zscoresnulisa_single)"))
+model2 <- lm(formula2, data = datafr, subset = (Abnormal_CSF_Ab42_Ab40_Ratio == 1))
+rsqr2 <- summary(model2)$adj.r.squared
+beta2 <- summary(model2)$coefficient[2]
+
+datafr$Abnormal_CSF_Ab42_Ab40_Ratio <- as.factor(as.numeric(datafr$Abnormal_CSF_Ab42_Ab40_Ratio))
+ggplot(datafr, aes(x = zscoresnulisa_multi, y = zscoresnulisa_single, color = Abnormal_CSF_Ab42_Ab40_Ratio)) +
+  geom_point(size = 1, shape = 21, alpha = 0.3, fill="grey40") +
+  geom_smooth(method = lm, color = "black") +
+  geom_abline(color = "black", linetype = "dotted") +
+  #scale_y_continuous(breaks = round(seq(-4, 10, by = 2.0), 2), limits = c(-4, 10), name = y_label) +
+  #scale_x_continuous(breaks = round(seq(-4, 10, by = 2.0), 2), limits = c(-4, 10), name = x_label) +
+  scale_color_manual(values = c("grey20", "#93003a"), guide = "none") +
+  theme_classic() +
+  annotate("text", x = 4, y = -4, label = paste("B:", format(round(beta1, 2), nsmall = 2), ", R2:", format(round(rsqr1, 2), 
+                                                                                                           nsmall = 2)),  size = 3, color = "black") +
+  theme(axis.text.x = element_text(size = 6),axis.text.y = element_text(size = 6),axis.title.x = element_text(size =8),
+  axis.title.y = element_text(size = 8),panel.border = element_rect(linewidth = 0.5, fill = NA))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/NULISAcorrelations.pdf",device = "pdf",width = 70, dpi=500, height = 70, units = "mm")
+```
+
+```{r analyses, echo=F}
+names(datafr)[names(datafr) == "gender_baseline_variable"] <- "gender"
+
+#ABPET----
+##AB-PET ROC----
+library(pROC)
+library(tidyverse)
+cutoffAB <- 1.033
+datafr$abpetbin <- ifelse(datafr$fnc_ber_com_composite >= cutoffAB, 1, 0)
+dfab <- datafr %>% drop_na(abpetbin)
+
+actual_labels <- dfab$abpetbin
+model1ab <- glm(abpetbin ~ zscoresnulisa_multi + scale(age) + gender, data = dfab, family = binomial)
+model2ab <- glm(abpetbin ~ zscoresnulisa_single + scale(age) + gender, data = dfab, family = binomial)
+
+predicted_probabilities1ab <- predict(model1ab, newdata=dfab, type = "response")
+predicted_probabilities2ab <- predict(model2ab, newdata=dfab, type = "response")
+
+roc1 = pROC::roc(actual_labels, predicted_probabilities1ab, quiet=T)     
+roc2 = pROC::roc(actual_labels, predicted_probabilities2ab, quiet=T)
+
+res <- roc.test(roc1, roc2, method = "delong")
+print(res) #significant difference
+
+results_roc <- list()
+results_auc <- list()
+biomarkers <- c("zscoresnulisa_multi", "zscoresnulisa_single")
+
+for (i in 1:length(biomarkers)){
+  predictors_i <- c(biomarkers[i])
+  
+  model <- glm(dfab$abpetbin ~ . + scale(dfab$age) + dfab$gender,
+               data = na.omit(dfab[predictors_i]),
+               family = binomial)
+  
+  predicted_probabilities <- predict(model, newdata=dfab[predictors_i], type = "response")
+  
+  roc = pROC::roc(dfab$abpetbin, predicted_probabilities, quiet=T)   
+  
+  coord <- coords(roc, "best", best.method="youden", ret=c("threshold","specificity", "sensitivity", "accuracy", "npv","ppv", "tn", "tp", "fn", "fp"))
+
+  results_roc[[i]] <- data.frame(
+    fpr = roc$specificities,
+    tpr = roc$sensitivities,
+    variable = predictors_i[[1]]
+  )
+  
+  auc_model1 <- ci.auc(roc)
+  auc_model <- auc_model1[2]
+  ci_lower_m1 <- auc_model1[1]
+  ci_upper_m1 <- auc_model1[3]
+  total_instances <- coord$tp + coord$tn + coord$fp + coord$fn
+  accuracy <- (coord$tp + coord$tn) / total_instances
+  
+  
+  results_auc[[i]] <- data.frame(
+    variable = predictors_i[[1]],
+    ci_lower = ci_lower_m1,
+    ci_upper = ci_upper_m1,
+    auc = round(auc_model,3),
+    Sensitivity = round((coord$sensitivity),3),
+    Specificity = round((coord$specificity),3),
+    NPV = round((coord$npv),3),
+    PPV = round((coord$ppv),3),
+    Accuracy = round(accuracy, 3),
+    stringsAsFactors = FALSE
+  )
+}
+results_roc <- do.call(rbind, results_roc)
+results_auc <- do.call(rbind, results_auc)
+openxlsx::write.xlsx(results_auc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/roc_ABPET_NULISA_multivssingle.xlsx")
+
+library(boot)
+bsab <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  actual_labels <- d$abpetbin
+  fml1_string <- paste("abpetbin ~ gender + scale(age) + scale(", ref,")")
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  roc_curve1 <- pROC::roc(actual_labels, pred_prob1, quiet=T)
+  auc_model1 <- ci.auc(roc_curve1)[2]
+  fml2_string <- paste("abpetbin ~ gender + scale(age) + scale(", comp,")")
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve2 <- pROC::roc(actual_labels, pred_prob2, quiet=T)
+  auc_model2 <- ci.auc(roc_curve2)[2]
+  difference_auc <- roc_curve1$auc - roc_curve2$auc
+  return(c(difference_auc, auc_model1, auc_model2))
+}
+
+biomarkers <- c("zscoresnulisa_multi", "zscoresnulisa_single")
+results_auc_ab <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dfab, 
+                         statistic = bsab, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    boot_aucdiff <- boot_results$t0[1]
+    results_underH0_aucdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue_aucdiff <- mean(abs(results_underH0_aucdiff) >= abs(boot_aucdiff))
+    ci1_auc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_auc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_aucdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_ab[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      AUC1 = round((boot_results$t0[2]),7),
+      aucci1_lower = round(ci1_auc[1],7),
+      aucci1_upper = round(ci1_auc[2],7),
+      AUC2 = round((boot_results$t0[3]),7),
+      aucci2_lower = round(ci2_auc[1],7),
+      aucci2_upper = round(ci2_auc[2],7), 
+      pvalue_auc = boot_pvalue_aucdiff,
+      aucdiff = round((boot_results$t0[1]),7),
+      cilow_aucdiff = round(cidiff_aucdiff[1],7),
+      cihigh_aucdiff=round(cidiff_aucdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_auc_ab <- do.call(rbind.data.frame, results_auc_ab)
+openxlsx::write.xlsx(final_auc_ab,file="~/Documents/Projects/H-2-H plasma ptau217 assays/AUC_ABPET_NULISA_multivssingle.xlsx")
+
+##AB-PET Accuracy----
+bsab <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  fml1_string <- paste("abpetbin ~ gender + scale(age)  +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  fml2_string <- paste("abpetbin ~ gender + scale(age)  +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve1 <- roc(d$abpetbin, pred_prob1, quiet=T)
+  coordm1 <- coords(roc_curve1, "best", best.method = "youden")
+  threshold1 <- coordm1$threshold
+  pred_bin1 <- ifelse(pred_prob1 > threshold1, 1, 0)
+  roc_curve2 <- roc(d$abpetbin, pred_prob2, quiet=T)
+  coordm2 <- coords(roc_curve2, "best", best.method = "youden")
+  threshold2 <- coordm2$threshold
+  pred_bin2 <- ifelse(pred_prob2 > threshold2, 1, 0)
+  cm1 <- table(d$abpetbin, pred_bin1)
+  cm2 <- table(d$abpetbin, pred_bin2)
+  accuracy_m1 <- sum(diag(cm1)) / sum(cm1)
+  accuracy_m2 <- sum(diag(cm2)) / sum(cm2)
+  difference_acc <- accuracy_m1 - accuracy_m2
+  return(c(difference_acc, accuracy_m1, accuracy_m2))
+}
+
+results_acc_ab_acc <- list()
+library(pROC)
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dfab, 
+                         statistic = bsab, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    
+    boot_accdiff <- boot_results$t0[1]
+    results_underH0_accdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[1])
+    boot_pvalue_accdiff <- mean(abs(results_underH0_accdiff) >= abs(boot_accdiff))
+    ci1_acc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_acc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_accdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_acc_ab_acc[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      Accuracy1 = round((boot_results$t0[2]),7),
+      accci1_lower = round(ci1_acc[1],7),
+      accci1_upper = round(ci1_acc[2],7),
+      Accuracy2 = round((boot_results$t0[3]),7),
+      accci2_lower = round(ci2_acc[1],7),
+      accci2_upper = round(ci2_acc[2],7),
+      pvalue_accuracy = boot_pvalue_accdiff,
+      accdiff = round((boot_results$t0[1]),7),
+      cilow_accdiff = round(cidiff_accdiff[1],7),
+      cihigh_accdiff=round(cidiff_accdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_acc_ab <- do.call(rbind.data.frame, results_acc_ab_acc)
+final_acc_ab$padj_acc <- round(p.adjust(final_acc_ab$pvalue_acc, method = "fdr"),3)
+openxlsx::write.xlsx(final_acc_ab,file="~/Documents/Projects/H-2-H plasma ptau217 assays/Accuracy_ABPET_NULISA_multivssingle.xlsx")
+
+
+#Tau-PET----
+cutofftau <- 1.362
+datafr$taupetbin <- ifelse(datafr$tnic_cho_com_I_IV >= cutofftau, 1, 0)
+dftau <- datafr %>% drop_na(taupetbin) #447
+actual_labels <- dftau$taupetbin
+actual_labels <- as.integer(actual_labels) 
+
+model1tau <- glm(taupetbin ~ zscoresnulisa_multi + scale(age) + gender, data = dftau, family = binomial)
+model2tau <- glm(taupetbin ~ zscoresnulisa_single + scale(age) + gender, data = dftau, family = binomial)
+predicted_probabilities1tau <- predict(model1tau, newdata=dftau, type = "response")
+predicted_probabilities2tau <- predict(model2tau, newdata=dftau, type = "response")
+roc_nulisamulti = pROC::roc(actual_labels, predicted_probabilities1tau)
+roc_nulisasingle = pROC::roc(actual_labels, predicted_probabilities2tau)
+
+roc_list <- list(roc_nulisamulti, roc_nulisasingle)
+combinations <- combn(roc_list, 2, simplify = F)
+delongres <- list()
+
+library(pROC)
+for (i in seq_along(combinations)) {
+  model1 <- combinations[[i]][[1]]
+  model2 <- combinations[[i]][[2]]
+  
+  res <- roc.test(model1, model2, method = "delong")
+  long <- data.frame(
+    zstat = round(res$statistic,3), 
+    pval = round(res$p.value,3),
+    auc1 = res$estimate[1], 
+    auc2 = res$estimate[2])
+  
+  delongres[[length(delongres) + 1]] <- long
+}
+
+delongres <- do.call(rbind.data.frame, delongres)
+delongres$padj <- round(p.adjust(delongres$pval, method = "fdr"),3)
+
+results_roc <- list()
+results_auc <- list()
+biomarkers <- c("zscoresnulisa_multi", "zscoresnulisa_single")
+
+for (i in 1:length(biomarkers)){
+  predictors_i <- c(biomarkers[i])  
+  model <- glm(dftau$taupetbin ~ . + scale(dftau$age) + dftau$gender,
+               data = na.omit(dftau[predictors_i]),
+               family = binomial)
+  
+  predicted_probabilities <- predict(model, newdata=dftau[predictors_i], type = "response")
+  
+  auccurve = pROC::roc(dftau$taupetbin, predicted_probabilities)   
+  
+  coord <- coords(auccurve, "best", best.method="youden", ret=c("threshold","specificity", "sensitivity", "accuracy", "npv","ppv", "tn", "tp", "fn", "fp"))
+  
+  results_roc[[i]] <- data.frame(
+    fpr = auccurve$specificities,
+    tpr = auccurve$sensitivities,
+    variable = predictors_i[[1]])
+  
+  auc_model1 <- ci.auc(auccurve)
+  auc_model <- auc_model1[2]
+  ci_lower_m1 <- auc_model1[1]
+  ci_upper_m1 <- auc_model1[3]
+  accuracy <- (coord$tp + coord$tn) / length(predicted_probabilities)
+  
+  results_auc[[i]] <- data.frame(
+    variable = predictors_i[[1]],
+    ci_lower = ci_lower_m1,
+    ci_upper = ci_upper_m1,
+    auc = round(auc_model,3),
+    Sensitivity = round((coord$sensitivity),3),
+    Specificity = round((coord$specificity),3),
+    NPV = round((coord$npv),3),
+    PPV = round((coord$ppv),3),
+    Accuracy = round(accuracy, 3),
+    stringsAsFactors = FALSE
+  )
+}
+results_roc <- do.call(rbind, results_roc)
+results_auc <- do.call(rbind, results_auc)
+openxlsx::write.xlsx(results_auc,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ROC_taupet_NULISA_multivssingle.xlsx")
+
+
+bstau <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  actual_labels <- d$taupetbin
+  fml1_string <- paste("taupetbin ~ scale(age) + gender +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  roc_curve1 <- pROC::roc(actual_labels, pred_prob1, quiet=T)
+  auc_model1 <- ci.auc(roc_curve1)[2]
+  fml2_string <- paste("taupetbin ~ scale(age) + gender +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve2 <- pROC::roc(actual_labels, pred_prob2, quiet=T)
+  auc_model2 <- ci.auc(roc_curve2)[2]
+  difference_auc <- roc_curve1$auc - roc_curve2$auc
+  return(c(difference_auc, auc_model1, auc_model2))
+}
+
+
+biomarkers <- c("zscoresnulisa_multi", "zscoresnulisa_single")
+results_auc_tau <- list()
+
+library(boot)
+library(pROC)
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dftau, 
+                         statistic = bstau, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    boot_aucdiff <- boot_results$t0[1]
+    results_underH0_aucdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue_aucdiff <- mean(abs(results_underH0_aucdiff) >= abs(boot_aucdiff))
+    ci1_auc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_auc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_aucdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_tau[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      AUC1 = round((boot_results$t0[2]),7),
+      aucci1_lower = round(ci1_auc[1],7),
+      aucci1_upper = round(ci1_auc[2],7),
+      AUC2 = round((boot_results$t0[3]),7),
+      aucci2_lower = round(ci2_auc[1],7),
+      aucci2_upper = round(ci2_auc[2],7), 
+      pvalue_auc = boot_pvalue_aucdiff,
+      aucdiff = round((boot_results$t0[1]),7),
+      cilow_aucdiff = round(cidiff_aucdiff[1],7),
+      cihigh_aucdiff=round(cidiff_aucdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_auc_tau <- do.call(rbind.data.frame, results_auc_tau)
+final_auc_tau$padj_auc <- round(p.adjust(final_auc_tau$pvalue_auc, method = "fdr"),3)
+openxlsx::write.xlsx(final_auc_tau,file="~/Documents/Projects/H-2-H plasma ptau217 assays/AUC_TauPET_NULISA_multivssingle.xlsx")
+
+##Tau-PET Accuracy----
+bstau <- function(data, indices, ref, comp) {
+  d <- data[indices, ]
+  fml1_string <- paste("taupetbin ~ scale(age) + gender +", ref)
+  formula1 <- as.formula(fml1_string)
+  model1 <- glm(formula1, data = d, family = binomial)
+  pred_prob1 <- predict(model1, newdata = d, type = "response")
+  fml2_string <- paste("taupetbin ~ scale(age) + gender +", comp)
+  formula2 <- as.formula(fml2_string)
+  model2 <- glm(formula2, data = d, family = binomial)
+  pred_prob2 <- predict(model2, newdata = d, type = "response")
+  roc_curve1 <- roc(d$taupetbin, pred_prob1, quiet=T)
+  coordm1 <- coords(roc_curve1, "best", best.method = "youden")
+  threshold1 <- coordm1$threshold
+  pred_bin1 <- ifelse(pred_prob1 > threshold1, 1, 0)
+  roc_curve2 <- roc(d$taupetbin, pred_prob2, quiet=T)
+  coordm2 <- coords(roc_curve2, "best", best.method = "youden")
+  threshold2 <- coordm2$threshold
+  pred_bin2 <- ifelse(pred_prob2 > threshold2, 1, 0)
+  cm1 <- table(d$taupetbin, pred_bin1)
+  cm2 <- table(d$taupetbin, pred_bin2)
+  accuracy_m1 <- sum(diag(cm1)) / sum(cm1)
+  accuracy_m2 <- sum(diag(cm2)) / sum(cm2)
+  difference_acc <- accuracy_m1 - accuracy_m2
+  return(c(difference_acc, accuracy_m1, accuracy_m2))
+}
+
+biomarkers <- c("zscoresnulisa_multi", "zscoresnulisa_single")
+
+results_auc_tau_acc <- list()
+library(pROC)
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dftau, 
+                         statistic = bstau, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    
+    boot_accdiff <- boot_results$t0[1]
+    results_underH0_accdiff <- bootstrap_replicates[,1] - mean(bootstrap_replicates[1])
+    boot_pvalue_accdiff <- mean(abs(results_underH0_accdiff) >= abs(boot_accdiff))
+    ci1_acc <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2_acc <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff_accdiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_auc_tau_acc[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      Accuracy1 = round((boot_results$t0[2]),7),
+      accci1_lower = round(ci1_acc[1],7),
+      accci1_upper = round(ci1_acc[2],7),
+      Accuracy2 = round((boot_results$t0[3]),7),
+      accci2_lower = round(ci2_acc[1],7),
+      accci2_upper = round(ci2_acc[2],7),
+      pvalue_accuracy = boot_pvalue_accdiff,
+      accdiff = round((boot_results$t0[1]),7),
+      cilow_accdiff = round(cidiff_accdiff[1],7),
+      cihigh_accdiff=round(cidiff_accdiff[2],7),
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+final_acc_tau <- do.call(rbind.data.frame, results_auc_tau_acc)
+final_acc_tau$padj_acc <- round(p.adjust(final_acc_tau$pvalue_acc, method = "fdr"),3)
+openxlsx::write.xlsx(final_acc_tau,file="~/Documents/Projects/H-2-H plasma ptau217 assays/Accuracy_TauPET_NULISA_multivssingle.xlsx")
+
+#Linear R2 CS----
+##AB----
+
+library(boot)
+dfab <- datafr %>% drop_na(fnc_ber_com_composite)
+
+R2diff_AB <- function(data, indices, ref, comp) {
+  d <- data[indices,] # allows boot to select sample #indices = 1:365
+  fml1=as.formula(paste("scale(fnc_ber_com_composite) ~ scale(",ref,") + scale(age) + gender"))
+  mdl1_boot=lm(fml1, data=d)
+  mdl1_sum = summary(mdl1_boot)
+  fml2=as.formula(paste("scale(fnc_ber_com_composite) ~ scale(",comp,") + scale(age) + gender"))
+  mdl2_boot=lm(fml2, data=d)
+  mdl2_sum = summary(mdl2_boot)
+  r2_m1 <- mdl1_sum$adj.r.squared
+  r2_m2 <- mdl2_sum$adj.r.squared
+  diff <- r2_m1 - r2_m2
+  return(c(diff, r2_m1, r2_m2))
+}
+
+results_r2_ab <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dfab, 
+                         statistic = R2diff_AB, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    bootxxx <- boot_results$t0[1]
+    results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+    ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_r2_ab[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      R2diff = round((boot_results$t0[1]),7),
+      R2group1 = round((boot_results$t0[2]),7),
+      R2group2 = round((boot_results$t0[3]),7),
+      pvalue = boot_pvalue,
+      cidiff_low = round(cidiff[1],7),
+      cidiff_high = round(cidiff[2],7),
+      ci1_lower = round(ci1[1],7),
+      ci1_upper = round(ci1[2],7),
+      ci2_lower = round(ci2[1],7),
+      ci2_upper = round(ci2[2],7), 
+      plotname = biomarkers[i]
+    )
+  }
+}
+
+finalr2_ab <- do.call(rbind.data.frame, results_r2_ab)
+finalr2_ab$padj <- round(p.adjust(finalr2_ab$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(finalr2_ab,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_R2_NULISA_multivssingle.xlsx")
+
+
+##TAU----
+
+library(boot)
+dftau <- datafr %>% drop_na(tnic_cho_com_I_IV)
+
+R2diff_tau <- function(data, indices, ref, comp) {
+  d <- data[indices,] # allows boot to select sample #indices = 1:365
+  fml1=as.formula(paste("scale(tnic_cho_com_I_IV) ~ scale(",ref,") + scale(age) + gender"))
+  mdl1_boot=lm(fml1, data=d)
+  mdl1_sum = summary(mdl1_boot)
+  fml2=as.formula(paste("scale(tnic_cho_com_I_IV) ~ scale(",comp,") + scale(age) + gender"))
+  mdl2_boot=lm(fml2, data=d)
+  mdl2_sum = summary(mdl2_boot)
+  r2_m1 <- mdl1_sum$adj.r.squared
+  r2_m2 <- mdl2_sum$adj.r.squared
+  diff <- r2_m1 - r2_m2
+  return(c(diff, r2_m1, r2_m2))
+}
+
+results_r2 <- list()
+
+for (i in 1:(length(biomarkers)-1)) {
+  zref <- biomarkers[i]
+  
+  for (j in (i + 1):length(biomarkers)) {
+    zcomp <- biomarkers[j]
+    
+    #hist(boot_results$t[,1])
+    set.seed(123)
+    boot_results <- boot(data = dftau, 
+                         statistic = R2diff_tau, 
+                         R = 1000, 
+                         ref = zref,
+                         comp = zcomp)
+    bootstrap_replicates <- boot_results$t
+    bootxxx <- boot_results$t0[1]
+    results_underH0 <- bootstrap_replicates[,1] - mean(bootstrap_replicates[,1])
+    boot_pvalue <- mean(abs(results_underH0) >= abs(bootxxx))
+    ci1 <- quantile(boot_results$t[,2], c(0.025, 0.975))
+    ci2 <- quantile(boot_results$t[,3], c(0.025, 0.975))
+    cidiff <- quantile(boot_results$t[,1], c(0.025, 0.975))
+    
+    results_r2[[paste(zref, zcomp, sep = "_")]] <- data.frame(
+      comp = paste(zref,zcomp, sep = "_"),
+      variable1 = zref,
+      variable2 = zcomp,
+      R2diff = round((boot_results$t0[1]),3),
+      R2group1 = round((boot_results$t0[2]),3),
+      R2group2 = round((boot_results$t0[3]),3),
+      pvalue = boot_pvalue,
+      cidiff_low = round(cidiff[1],3),
+      cidiff_high = round(cidiff[2],3),
+      ci1_lower = round(ci1[1],3),
+      ci1_upper = round(ci1[2],3),
+      ci2_lower = round(ci2[1],3),
+      ci2_upper = round(ci2[2],3), 
+      plotname = biomarkers[i],
+      plot_R2group1 = round((boot_results$t0[2]),7),
+      plot_R2group2 = round((boot_results$t0[3]),7),
+      plot_ci1_lower = round(ci1[1],6),
+      plot_ci1_upper = round(ci1[2],6),
+      plot_ci2_lower = round(ci2[1],6),
+      plot_ci2_upper = round(ci2[2],6)
+    )
+  }
+}
+
+finalr2 <- do.call(rbind.data.frame, results_r2)
+finalr2$padj <- round(p.adjust(finalr2$pvalue, method = "fdr"),3)
+openxlsx::write.xlsx(finalr2,
+                     file="~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_R2_NULISA_multivssingle.xlsx")
+
+#Figures----
+#Figure NULISA
+
+#assemble dataset
+
+##AB----
+abauc <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/AUC_ABPET_NULISA_multivssingle.xlsx")
+abauc1 <- abauc[,4:6]
+colnames(abauc1) <- c("Stat", "ci_low", "ci_high")
+abauc1$group <- "Multi"
+abauc2 <- abauc[,7:9]
+colnames(abauc2) <- c("Stat", "ci_low", "ci_high")
+abauc2$group <- "Single"
+abauc <- rbind(abauc1, abauc2)
+abauc$Measure <- "AUC"
+
+abacc <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/Accuracy_ABPET_NULISA_multivssingle.xlsx")
+abacc1 <- abacc[,4:6]
+colnames(abacc1) <- c("Stat", "ci_low", "ci_high")
+abacc1$group <- "Multi"
+abacc2 <- abacc[,7:9]
+colnames(abacc2) <- c("Stat", "ci_low", "ci_high")
+abacc2$group <- "Single"
+abacc <- rbind(abacc1, abacc2)
+abacc$Measure <- "Accuracy"
+
+abr2cs <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/ABPET_R2_NULISA_multivssingle.xlsx")
+abr2cs1 <- abr2cs[,c(5,10:11)]
+colnames(abr2cs1) <- c("Stat", "ci_low", "ci_high")
+abr2cs1$group <- "Multi"
+abr2cs2 <- abr2cs[,c(6,12:13)]
+colnames(abr2cs2) <- c("Stat", "ci_low", "ci_high")
+abr2cs2$group <- "Single"
+abr2cs <- rbind(abr2cs1, abr2cs2)
+abr2cs$Measure <- "R2 CS"
+
+plotdata <-rbind(abauc, abacc, abr2cs)
+
+group_order <- c("AUC", "Accuracy", "R2 CS")
+col_ord <- c("Multi", "Single")
+
+ggplot(data=plotdata, aes(y = factor(Measure, levels=rev(group_order)), x = Stat, shape=rev(group))) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high),
+                width = 0.2, linewidth = 0.5, position = position_dodge(width = 0.8), color="#93003a") +
+  geom_point(position = position_dodge(width = 0.8), size = 4, stroke = 0.5, fill="#93003a", color="#93003a") +
+  scale_x_continuous(limits=c(0,1),breaks = seq(0,1, by=0.25),expand =c(0,0))+
+  labs(x = "AB-PET", y = "") +
+  geom_text(aes(label = sprintf("%.2f", Stat)), position = position_dodge(width=0.75), vjust=-0.8,
+            hjust=-0.25, size = 4, color="#93003a") +
+  scale_shape_manual(values=c(17, 21), labels=c("Alamar Singleplex", "Alamar Multiplex"), guide="none")+
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10, face = "bold"),
+        axis.ticks.y = element_blank(),
+        axis.title.x = element_text(face = "bold"),
+        legend.text = element_text(size = 8),  # Decrease legend text size
+        legend.title = element_text(size = 8))
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/NULISA_ABPET.pdf",device = "pdf",width = 100, dpi=500, height = 80, units = "mm")
+
+
+##Tau----
+
+abauc <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/AUC_TauPET_NULISA_multivssingle.xlsx")
+abauc1 <- abauc[,4:6]
+colnames(abauc1) <- c("Stat", "ci_low", "ci_high")
+abauc1$group <- "Multi"
+abauc2 <- abauc[,7:9]
+colnames(abauc2) <- c("Stat", "ci_low", "ci_high")
+abauc2$group <- "Single"
+abauc <- rbind(abauc1, abauc2)
+abauc$Measure <- "AUC"
+
+abacc <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/Accuracy_TauPET_NULISA_multivssingle.xlsx")
+abacc1 <- abacc[,4:6]
+colnames(abacc1) <- c("Stat", "ci_low", "ci_high")
+abacc1$group <- "Multi"
+abacc2 <- abacc[,7:9]
+colnames(abacc2) <- c("Stat", "ci_low", "ci_high")
+abacc2$group <- "Single"
+abacc <- rbind(abacc1, abacc2)
+abacc$Measure <- "Accuracy"
+
+abr2cs <- read_xlsx("~/Documents/Projects/H-2-H plasma ptau217 assays/TauPET_R2_NULISA_multivssingle.xlsx")
+abr2cs1 <- abr2cs[,c(5,10:11)]
+colnames(abr2cs1) <- c("Stat", "ci_low", "ci_high")
+abr2cs1$group <- "Multi"
+abr2cs2 <- abr2cs[,c(6,12:13)]
+colnames(abr2cs2) <- c("Stat", "ci_low", "ci_high")
+abr2cs2$group <- "Single"
+abr2cs <- rbind(abr2cs1, abr2cs2)
+abr2cs$Measure <- "R2 CS"
+
+plotdata <-rbind(abauc, abacc, abr2cs)
+
+group_order <- c("AUC", "Accuracy", "R2 CS")
+col_ord <- c("Multi", "Single")
+
+ggplot(data=plotdata, aes(y = factor(Measure, levels=rev(group_order)), x = Stat, shape=rev(group))) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high),
+                width = 0.2, linewidth = 0.5, position = position_dodge(width = 0.8), color="#93003a") +
+  geom_point(position = position_dodge(width = 0.8), size = 4, stroke = 0.5, fill="#93003a", color="#93003a") +
+  scale_x_continuous(limits=c(0,1),breaks = seq(0,1, by=0.25),expand =c(0,0))+
+  labs(x = "Tau-PET", y = "") +
+  geom_text(aes(label = sprintf("%.2f", Stat)), position = position_dodge(width=0.75), vjust=-0.8,
+            hjust=-0.25, size = 4, color="#93003a") +
+  scale_shape_manual(values=c(17, 21), labels=c("Alamar Singleplex", "Alamar Multiplex"), guide="none")+
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10, face = "bold"),
+        axis.ticks.y = element_blank(),
+        axis.title.x = element_text(face = "bold"),
+        legend.text = element_text(size = 8),  # Decrease legend text size
+        legend.title = element_text(size = 8))
+
+ggsave("~/Documents/Projects/H-2-H plasma ptau217 assays/NULISA_TauPET.pdf",device = "pdf",width = 100, dpi=500, height = 80, units = "mm")
+
+```
